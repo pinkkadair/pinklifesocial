@@ -9,7 +9,8 @@ import { Avatar, AvatarImage } from "./ui/avatar";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import { ImageIcon, Loader2Icon, SendIcon } from "lucide-react";
-import { UploadButton } from "@/lib/uploadthing";
+import { UploadButton } from "@uploadthing/react";
+import { OurFileRouter } from "@/app/api/uploadthing/core";
 
 export default function CreatePost() {
   const { data: session } = useSession();
@@ -69,14 +70,14 @@ export default function CreatePost() {
               </div>
             )}
             <div className="flex justify-between items-center">
-              <UploadButton
-                endpoint="postImage"
-                onClientUploadComplete={(res) => {
+              <UploadButton<OurFileRouter, "profileImage">
+                endpoint="profileImage"
+                onClientUploadComplete={(res: { url: string }[]) => {
                   setImage(res?.[0]?.url || "");
                   toast.success("Image uploaded successfully");
                 }}
                 onUploadError={(error: Error) => {
-                  toast.error(`Failed to upload image: ${error.message}`);
+                  toast.error(`Error uploading image: ${error.message}`);
                 }}
               />
               <Button

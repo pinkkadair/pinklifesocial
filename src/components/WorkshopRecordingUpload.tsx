@@ -47,9 +47,7 @@ export default function WorkshopRecordingUpload({
     setIsUploading(true);
     try {
       const files = Array.from(e.target.files);
-      await startUpload(files, {
-        workshopId,
-      });
+      await startUpload(files);
     } catch (error) {
       setIsUploading(false);
       toast({

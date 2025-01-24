@@ -1,93 +1,117 @@
+import { NextRequest, NextResponse } from 'next/server';
 import { headers } from 'next/headers';
-import { NextResponse } from 'next/server';
-import { prisma } from '@/lib/prisma';
 import stripe from '@/lib/stripe';
+import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
-import { handleSubscriptionChange } from '@/lib/stripe';
-import { withErrorHandler } from '@/lib/api-middleware';
+import { SubscriptionTier } from '@prisma/client';
 
-const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
 
-async function handler(request: Request) {
-  const body = await request.text();
-  const signature = headers().get('stripe-signature')!;
-
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(
-      body,
-      signature,
-      webhookSecret
-    );
-  } catch (error) {
-    logger.error('Webhook signature verification failed:', error as Error);
+export async function POST(request: NextRequest) {
+  if (!stripe) {
+    logger.error('Stripe is not initialized');
     return NextResponse.json(
-      { error: 'Webhook signature verification failed' },
-      { status: 400 }
+      { error: 'Stripe is not configured' },
+      { status: 500 }
+    );
+  }
+
+  if (!webhookSecret) {
+    logger.error('Missing Stripe webhook secret');
+    return NextResponse.json(
+      { error: 'Webhook secret is not configured' },
+      { status: 500 }
     );
   }
 
   try {
+    const body = await request.text();
+    const signature = headers().get('stripe-signature');
+
+    if (!signature) {
+      return NextResponse.json(
+        { error: 'No signature found' },
+        { status: 400 }
+      );
+    }
+
+    const event = stripe.webhooks.constructEvent(
+      body,
+      signature,
+      webhookSecret
+    );
+
+    logger.info({
+      event: 'stripe_webhook_received',
+      type: event.type,
+      id: event.id,
+    });
+
     switch (event.type) {
-      case 'customer.subscription.created':
-      case 'customer.subscription.updated':
-      case 'customer.subscription.deleted': {
-        const subscription = event.data.object;
-        const { customerId, status, tier } = await handleSubscriptionChange(subscription.id);
+      case 'checkout.session.completed': {
+        const session = event.data.object;
+        
+        if (!session.customer || typeof session.customer !== 'string') {
+          throw new Error('No customer ID in session');
+        }
+
+        const tier = (session.metadata?.tier || 'PINKU') as SubscriptionTier;
 
         // Update user subscription status
         await prisma.user.update({
           where: {
-            stripeCustomerId: customerId,
+            stripeCustomerId: session.customer,
           },
           data: {
-            subscriptionTier: status === 'active' ? tier : 'FREE',
-            subscriptionStatus: status,
-            subscriptionId: subscription.id,
+            subscriptionStatus: 'active',
+            subscriptionTier: tier,
           },
         });
 
-        logger.info(`Subscription ${event.type}`, {
-          customerId,
-          subscriptionId: subscription.id,
-          status,
+        logger.info({
+          event: 'subscription_activated',
+          customerId: session.customer,
           tier,
         });
         break;
       }
 
-      case 'customer.subscription.trial_will_end': {
+      case 'customer.subscription.deleted': {
         const subscription = event.data.object;
-        const user = await prisma.user.findFirst({
+        
+        if (!subscription.customer || typeof subscription.customer !== 'string') {
+          throw new Error('No customer ID in subscription');
+        }
+
+        // Update user subscription status
+        await prisma.user.update({
           where: {
-            subscriptionId: subscription.id,
+            stripeCustomerId: subscription.customer,
           },
-          select: {
-            email: true,
-            name: true,
+          data: {
+            subscriptionStatus: 'canceled',
+            subscriptionTier: 'FREE' as SubscriptionTier,
           },
         });
 
-        if (user) {
-          // Here you would typically send an email notification
-          logger.info('Trial ending notification needed', {
-            subscriptionId: subscription.id,
-            userEmail: user.email,
-          });
-        }
+        logger.info({
+          event: 'subscription_canceled',
+          customerId: subscription.customer,
+        });
         break;
       }
 
+      // Add other webhook events as needed
       default:
         logger.info(`Unhandled event type: ${event.type}`);
     }
 
     return NextResponse.json({ received: true });
   } catch (error) {
-    logger.error('Error processing webhook:', error as Error);
-    throw error;
+    logger.error('Error handling Stripe webhook:', error);
+    return NextResponse.json(
+      { error: 'Webhook handler failed' },
+      { status: 400 }
+    );
   }
-}
-
-export const POST = withErrorHandler(handler); 
+} 

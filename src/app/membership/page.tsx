@@ -1,108 +1,98 @@
+import { Metadata } from "next";
 import { getServerSession } from "next-auth";
-import { redirect } from "next/navigation";
-import { SUBSCRIPTION_PLANS, SubscriptionTier, getSubscriptionUrl } from "@/lib/stripe";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { authOptions } from "@/lib/auth";
+import { SUBSCRIPTION_PLANS } from "@/lib/stripe";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { CheckIcon, Crown, Gem, Sparkles } from "lucide-react";
-import Link from "next/link";
+import { CheckIcon } from "lucide-react";
+import { redirect } from "next/navigation";
 
-export const metadata = {
-  title: "PinkLife Membership",
-  description: "Choose your PinkLife membership plan",
+export const metadata: Metadata = {
+  title: "Membership Plans",
+  description: "Choose a membership plan that's right for you",
 };
 
 export default async function MembershipPage() {
-  const session = await getServerSession();
-  
-  if (!session?.user?.email) {
+  const session = await getServerSession(authOptions);
+  if (!session?.user) {
     redirect("/sign-in");
   }
 
+  const tier = session.user.subscriptionTier;
+
   return (
-    <div className="container mx-auto px-4 py-8">
-      <div className="max-w-4xl mx-auto">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold mb-2">Choose Your Membership</h1>
-          <p className="text-muted-foreground">
-            Select a plan that best fits your beauty journey
-          </p>
-        </div>
+    <div className="container max-w-6xl py-8">
+      <div className="mx-auto flex max-w-3xl flex-col items-center space-y-4 text-center">
+        <h1 className="text-3xl font-bold">Choose Your Membership Plan</h1>
+        <p className="text-muted-foreground">
+          Select a plan that best fits your beauty journey
+        </p>
+      </div>
 
-        <div className="grid gap-6 md:grid-cols-3">
-          {Object.entries(SUBSCRIPTION_PLANS).map(([key, plan]) => {
-            const tier = key as SubscriptionTier;
-            const Icon = tier === 'VIP' ? Crown : tier === 'PINKU' ? Gem : Sparkles;
+      <div className="mt-8 grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        {Object.entries(SUBSCRIPTION_PLANS).map(([key, plan]) => (
+          <Card
+            key={key}
+            className={`relative flex flex-col ${
+              tier === key ? "border-primary" : ""
+            }`}
+          >
+            {tier === key && (
+              <div className="absolute -top-4 left-1/2 -translate-x-1/2 rounded-full bg-primary px-4 py-1 text-sm font-medium text-primary-foreground">
+                Current Plan
+              </div>
+            )}
 
-            return (
-              <Card 
-                key={key} 
-                className={
-                  tier === 'VIP' 
-                    ? 'border-pink-500 shadow-lg' 
-                    : tier === 'PINKU' 
-                    ? 'border-purple-500' 
-                    : ''
-                }
-              >
-                <CardHeader>
-                  <div className="flex items-center gap-2">
-                    <div className={`rounded-full p-2 ${
+            <CardHeader>
+              <CardTitle>{plan.name}</CardTitle>
+              <CardDescription>
+                {plan.price === 0 ? (
+                  "Free"
+                ) : (
+                  <>
+                    ${plan.price}
+                    <span className="text-muted-foreground">/month</span>
+                  </>
+                )}
+              </CardDescription>
+            </CardHeader>
+
+            <CardContent>
+              <ul className="space-y-2">
+                {plan.features.map((feature: string, index: number) => (
+                  <li key={index} className="flex items-start gap-2">
+                    <CheckIcon className={`h-5 w-5 shrink-0 ${
                       tier === 'VIP' 
-                        ? 'bg-pink-100 text-pink-500' 
-                        : tier === 'PINKU' 
-                        ? 'bg-purple-100 text-purple-500'
-                        : 'bg-gray-100 text-gray-500'
-                    }`}>
-                      <Icon className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <CardTitle>{plan.name}</CardTitle>
-                      <CardDescription>
-                        {tier === 'FREE' ? 'Basic Access' : `$${plan.price}/month`}
-                      </CardDescription>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <ul className="space-y-2">
-                    {plan.features.map((feature, index) => (
-                      <li key={index} className="flex items-start gap-2">
-                        <CheckIcon className={`h-5 w-5 shrink-0 ${
-                          tier === 'VIP' 
-                            ? 'text-pink-500' 
-                            : tier === 'PINKU' 
-                            ? 'text-purple-500'
-                            : 'text-gray-500'
-                        }`} />
-                        <span>{feature}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </CardContent>
-                <CardFooter>
-                  {tier !== 'FREE' && (
-                    <Button
-                      className="w-full"
-                      variant={tier === 'VIP' ? 'default' : 'outline'}
-                      asChild
-                    >
-                      <Link href={getSubscriptionUrl(tier)}>
-                        Subscribe to {plan.name}
-                      </Link>
-                    </Button>
-                  )}
-                </CardFooter>
-              </Card>
-            );
-          })}
-        </div>
+                        ? 'text-pink-500'
+                        : tier === 'PINKU'
+                        ? 'text-pink-400'
+                        : 'text-green-500'
+                    }`} />
+                    <span>{feature}</span>
+                  </li>
+                ))}
+              </ul>
+            </CardContent>
 
-        <div className="mt-8 text-center text-sm text-muted-foreground">
-          <p>All paid plans include a 7-day free trial. Cancel anytime.</p>
-          <p className="mt-2">
-            Questions? <Link href="/contact" className="underline">Contact us</Link>
-          </p>
-        </div>
+            <div className="mt-auto p-6">
+              {key !== "FREE" && (
+                <Button
+                  className="w-full"
+                  variant={tier === key ? "outline" : "default"}
+                  asChild
+                >
+                  <a
+                    href={plan.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {tier === key ? "Manage Subscription" : "Upgrade"}
+                  </a>
+                </Button>
+              )}
+            </div>
+          </Card>
+        ))}
       </div>
     </div>
   );

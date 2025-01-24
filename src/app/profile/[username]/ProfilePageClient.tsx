@@ -56,6 +56,7 @@ import {
   AccordionTrigger,
 } from "@/components/ui/accordion";
 import { ProfileImageUpload } from "@/components/ProfileImageUpload";
+import { SUBSCRIPTION_PLANS } from "@/lib/stripe";
 
 interface User {
   id: string;

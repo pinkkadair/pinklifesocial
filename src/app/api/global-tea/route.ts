@@ -1,190 +1,156 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getServerSession } from 'next-auth';
+import { authOptions } from '@/lib/auth';
 import { prisma } from '@/lib/prisma';
+import { logger } from '@/lib/logger';
+import { z } from 'zod';
 
-const VALID_TEA_TYPES = ['BEAUTY_WISDOM', 'TRENDING', 'COMMUNITY_SPOTLIGHT', 'LOCAL_TEA'] as const;
+const VALID_TEA_TYPES = ['BEAUTY_WISDOM', 'TRENDING', 'COMMUNITY_SPOTLIGHT', 'LOCAL_TEA', 'SPILL'] as const;
+type TeaType = typeof VALID_TEA_TYPES[number];
 
-export async function GET(request: Request) {
+const postSchema = z.object({
+  content: z.string().min(1),
+  type: z.enum(VALID_TEA_TYPES),
+  image: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+});
+
+export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
-    const type = searchParams.get('type');
+    const type = searchParams.get('type') as TeaType | null;
+    const cursor = searchParams.get('cursor');
+    const limit = 10;
 
-    if (!type || !VALID_TEA_TYPES.includes(type as any)) {
-      return NextResponse.json(
-        { error: 'Invalid tea type' },
-        { status: 400 }
-      );
-    }
-
-    let query: any = {
-      where: {
-        type: type as any,
+    const posts = await prisma.globalTeaPost.findMany({
+      take: limit,
+      ...(cursor && {
+        skip: 1,
+        cursor: {
+          id: cursor,
+        },
+      }),
+      ...(type && {
+        where: {
+          type,
+        },
+      }),
+      orderBy: {
+        createdAt: 'desc',
       },
       include: {
         author: {
           select: {
             id: true,
-            name: true,
-            image: true,
             username: true,
+            image: true,
           },
         },
-        likes: true,
-        comments: true,
         tags: true,
+        _count: {
+          select: {
+            comments: true,
+            likes: true,
+          },
+        },
       },
-      orderBy: {
-        createdAt: 'desc',
-      },
-    };
+    });
 
-    // Special handling for trending posts
-    if (type === 'TRENDING') {
-      // Get posts from the last 7 days with most likes and comments
-      const sevenDaysAgo = new Date();
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const nextCursor = posts.length === limit ? posts[posts.length - 1].id : null;
 
-      query.where = {
-        createdAt: {
-          gte: sevenDaysAgo,
-        },
-      };
-      query.orderBy = [
-        {
-          likes: {
-            _count: 'desc',
-          },
-        },
-        {
-          comments: {
-            _count: 'desc',
-          },
-        },
-      ];
-    }
+    logger.info({
+      event: 'global_tea_posts_fetched',
+      count: posts.length,
+      type,
+      cursor,
+    });
 
-    // Special handling for community spotlight
-    if (type === 'COMMUNITY_SPOTLIGHT') {
-      // Get posts with high engagement and quality content
-      query.where = {
-        OR: [
-          {
-            likes: {
-              some: {},
-            },
-          },
-          {
-            comments: {
-              some: {},
-            },
-          },
-        ],
-      };
-      query.orderBy = [
-        {
-          likes: {
-            _count: 'desc',
-          },
-        },
-        {
-          comments: {
-            _count: 'desc',
-          },
-        },
-      ];
-    }
-
-    // Special handling for local tea
-    if (type === 'LOCAL_TEA') {
-      // Get posts with region information
-      query.where = {
-        AND: [
-          { type: 'LOCAL_TEA' },
-          { region: { not: null } }
-        ]
-      };
-      query.orderBy = {
-        createdAt: 'desc'
-      };
-    }
-
-    const posts = await prisma.globalTeaPost.findMany(query);
-    return NextResponse.json(posts);
+    return NextResponse.json({
+      posts,
+      nextCursor,
+    });
   } catch (error) {
-    console.error('Error in GET /api/global-tea:', error);
+    logger.error('Failed to fetch global tea posts:', error);
     return NextResponse.json(
-      { error: 'Internal Server Error' },
+      { error: 'Failed to fetch posts' },
       { status: 500 }
     );
   }
 }
 
-export async function POST(request: Request) {
+export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession();
+    const session = await getServerSession(authOptions);
     if (!session?.user?.email) {
-      return NextResponse.json(
-        { error: 'Unauthorized' },
-        { status: 401 }
-      );
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const user = await prisma.user.findUnique({
       where: { email: session.user.email },
-      select: { id: true },
     });
 
     if (!user) {
-      return NextResponse.json(
-        { error: 'User not found' },
-        { status: 404 }
-      );
+      return NextResponse.json({ error: 'User not found' }, { status: 404 });
     }
 
-    const data = await request.json();
-    const { title, content, type, image, tags } = data;
+    const body = await request.json();
+    const { content, type, image, tags } = postSchema.parse(body);
 
-    if (!title || !content || !type || !VALID_TEA_TYPES.includes(type)) {
+    if (!content || !type || !VALID_TEA_TYPES.includes(type)) {
       return NextResponse.json(
         { error: 'Missing required fields or invalid type' },
         { status: 400 }
       );
     }
 
+    // Create post with tags
     const post = await prisma.globalTeaPost.create({
       data: {
-        title,
         content,
         type,
         image,
         authorId: user.id,
-        tags: {
-          create: tags.split(',')
-            .map((tag: string) => tag.trim())
-            .filter(Boolean)
-            .map((tag: string) => ({ name: tag })),
-        },
+        ...(tags && tags.length > 0 && {
+          tags: {
+            connectOrCreate: tags.map(tag => ({
+              where: { name: tag },
+              create: { name: tag },
+            })),
+          },
+        }),
       },
       include: {
         author: {
           select: {
             id: true,
-            name: true,
-            image: true,
             username: true,
+            image: true,
           },
         },
-        likes: true,
-        comments: true,
         tags: true,
       },
     });
 
+    logger.info({
+      event: 'global_tea_post_created',
+      postId: post.id,
+      userId: user.id,
+      type,
+    });
+
     return NextResponse.json(post);
   } catch (error) {
-    console.error('Error in POST /api/global-tea:', error);
+    logger.error('Failed to create global tea post:', error);
+    
+    if (error instanceof z.ZodError) {
+      return NextResponse.json(
+        { error: 'Invalid request data', details: error.errors },
+        { status: 400 }
+      );
+    }
+
     return NextResponse.json(
-      { error: 'Internal Server Error' },
+      { error: 'Failed to create post' },
       { status: 500 }
     );
   }

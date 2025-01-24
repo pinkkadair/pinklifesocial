@@ -2,6 +2,7 @@ import * as tf from '@tensorflow/tfjs';
 import * as blazeface from '@tensorflow-models/blazeface';
 import { createDetector, SupportedModels, FaceLandmarksDetector } from '@tensorflow-models/face-landmarks-detection';
 import { logger } from './logger';
+import type { Tensor3D } from '@tensorflow/tfjs';
 
 export interface MLModels {
   faceDetector?: blazeface.BlazeFaceModel;
@@ -178,21 +179,32 @@ class MLModelManager {
       const tensor = tf.browser.fromPixels(imageData);
       tensors.push(tensor);
 
-      // Convert to proper shape for analysis
-      const reshapedTensor = tensor.reshape([1, tensor.shape[0], tensor.shape[1], tensor.shape[2]]);
-      tensors.push(reshapedTensor);
+      const processedTensor = tf.tidy(() => {
+        // Check tensor shape
+        if (tensor.shape.length !== 3) {
+          throw new Error('Expected a 3D tensor with shape [height, width, channels]');
+        }
+        
+        // Create a new 3D tensor with explicit dimensions
+        const [height, width] = tensor.shape;
+        return tf.tensor3d(
+          Array.from(tensor.dataSync()),
+          [height, width, 3],
+          'float32'
+        ).div(255);
+      }) as tf.Tensor3D;
 
-      // Extract face region and analyze texture
-      const grayScale = tf.image.rgbToGrayscale(reshapedTensor);
+      // Now we can safely use it for grayscale conversion
+      const grayScale = tf.image.rgbToGrayscale(processedTensor);
       tensors.push(grayScale);
 
-      const normalized = tf.div(grayScale, 255);
+      const normalized = tf.div(grayScale, 255) as tf.Tensor3D;
       tensors.push(normalized);
       
       // Calculate local variance as a measure of texture
       const poolSize = 3;
       const variance = tf.pool(
-        normalized,
+        normalized as tf.Tensor3D, // Safe to cast here since we know the shape
         [poolSize, poolSize],
         'avg',
         'valid',
@@ -218,8 +230,12 @@ class MLModelManager {
       tensors.push(tensor);
 
       // Convert to proper shape for analysis
-      const reshapedTensor = tensor.reshape([1, tensor.shape[0], tensor.shape[1], tensor.shape[2]]);
-      tensors.push(reshapedTensor);
+      const reshapedTensor = tf.tidy(() => {
+        const resized = tf.image.resizeBilinear(tensor as tf.Tensor3D, [224, 224]);
+        return resized;
+      });
+      const grayScale = tf.image.rgbToGrayscale(reshapedTensor);
+      tensors.push(grayScale);
 
       // Convert to LAB color space for better skin tone analysis
       const lab = tf.tidy(() => {

@@ -3,16 +3,12 @@ import pino from 'pino';
 const isDevelopment = process.env.NODE_ENV === 'development';
 
 // Configure logger based on environment
-const pinoConfig = {
+const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
   enabled: process.env.NODE_ENV !== 'test',
+  timestamp: pino.stdTimeFunctions.isoTime,
   formatters: {
     level: (label: string) => ({ level: label }),
-    bindings: () => ({}),
-  },
-  timestamp: () => `,"time":"${new Date().toISOString()}"`,
-  browser: {
-    asObject: true,
   },
   redact: {
     paths: [
@@ -24,38 +20,35 @@ const pinoConfig = {
       'req.headers.authorization',
       'body.password',
       'body.token',
-      'data.password',
-      'data.token',
     ],
     remove: true,
   },
-};
+  mixin() {
+    return {
+      service: 'pinklifesocial',
+      environment: process.env.NODE_ENV,
+    };
+  },
+  serializers: {
+    err: pino.stdSerializers.err,
+    error: pino.stdSerializers.err,
+    req: pino.stdSerializers.req,
+    res: pino.stdSerializers.res,
+  },
+  ...(isDevelopment ? {
+    transport: {
+      target: 'pino-pretty',
+      options: {
+        colorize: true,
+        ignore: 'pid,hostname',
+        sync: true,
+        mkdir: true
+      }
+    }
+  } : {})
+});
 
-// Create logger instance without worker threads for Next.js compatibility
-export const logger = isDevelopment
-  ? pino({
-      ...pinoConfig,
-      transport: {
-        target: 'pino-pretty',
-        options: {
-          colorize: true,
-        },
-      },
-    })
-  : pino({
-      ...pinoConfig,
-      // Disable worker threads in production
-      browser: {
-        ...pinoConfig.browser,
-        write: (o) => {
-          // In production, you might want to send logs to a logging service
-          // For now, we'll just use console
-          console.log(JSON.stringify(o));
-        },
-      },
-    });
-
-// Enhanced request logging middleware
+// Enhanced request logging middleware with synchronous logging
 export const withLogging = (handler: Function) => {
   return async (...args: any[]) => {
     const request = args[0];
@@ -71,19 +64,25 @@ export const withLogging = (handler: Function) => {
     };
 
     try {
-      logger.info({ ...requestData, event: 'request_started' }, 'Request started');
+      // Log request start
+      logger.info({
+        ...requestData,
+        event: 'request_started',
+      });
       
       const result = await handler(...args);
       
+      // Log request completion
       logger.info({
         ...requestData,
         event: 'request_completed',
         statusCode: result.status,
         duration: Date.now() - startTime,
-      }, 'Request completed');
+      });
 
       return result;
     } catch (error) {
+      // Log errors
       logger.error({
         ...requestData,
         event: 'request_failed',
@@ -93,9 +92,11 @@ export const withLogging = (handler: Function) => {
           stack: isDevelopment ? error.stack : undefined,
         } : 'Unknown error',
         duration: Date.now() - startTime,
-      }, 'Request failed');
+      });
 
       throw error;
     }
   };
-}; 
+};
+
+export { logger }; 

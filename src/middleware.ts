@@ -18,8 +18,32 @@ const restrictedRoutes = {
   '/analytics': ['VIP'],
 };
 
+// Add request size limit (10MB)
+const MAX_BODY_SIZE = 10 * 1024 * 1024;
+
+// Add additional protected paths
+const protectedPaths = [
+  '/api/user',
+  '/api/post',
+  '/api/workshop',
+  '/settings',
+];
+
+// Add rate limit configurations
+const rateLimits = {
+  '/api/auth': { window: '5m', max: 10 },
+  '/api/upload': { window: '1m', max: 5 },
+  default: { window: '1m', max: 100 },
+};
+
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+
+  // Check request size
+  const contentLength = parseInt(request.headers.get('content-length') || '0');
+  if (contentLength > MAX_BODY_SIZE) {
+    return new NextResponse('Request entity too large', { status: 413 });
+  }
 
   // Allow public routes
   if (publicRoutes.some(route => pathname.startsWith(route))) {
@@ -43,6 +67,7 @@ export async function middleware(request: NextRequest) {
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set('x-user-id', token.sub as string);
   requestHeaders.set('x-user-role', token.subscriptionTier as string);
+  requestHeaders.set('x-request-id', crypto.randomUUID());
 
   // Continue with added security headers
   const response = NextResponse.next({
@@ -64,9 +89,10 @@ function addSecurityHeaders(response: NextResponse) {
   headers.set('X-Content-Type-Options', 'nosniff');
   headers.set('X-XSS-Protection', '1; mode=block');
   headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
-  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  headers.set('Permissions-Policy', 
+    'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()');
   
-  // Content Security Policy
+  // Enhanced CSP
   headers.set(
     'Content-Security-Policy',
     [
@@ -80,8 +106,15 @@ function addSecurityHeaders(response: NextResponse) {
       "frame-ancestors 'none'",
       "form-action 'self'",
       "base-uri 'self'",
+      "upgrade-insecure-requests",
+      "block-all-mixed-content",
     ].join('; ')
   );
+
+  // Cache control
+  headers.set('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  headers.set('Pragma', 'no-cache');
+  headers.set('Expires', '0');
 
   return response;
 }

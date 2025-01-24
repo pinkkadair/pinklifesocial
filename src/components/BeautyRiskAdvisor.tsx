@@ -94,7 +94,11 @@ function BeautyRiskAdvisor({ beautyRisk }: BeautyRiskAdvisorProps) {
 
         <Dialog open={showAssessment} onOpenChange={setShowAssessment}>
           <DialogContent className="sm:max-w-[600px]">
-            <BeautyRiskAssessment onComplete={handleCloseAssessment} />
+            <BeautyRiskAssessment 
+              open={showAssessment}
+              onClose={setShowAssessment}
+              onComplete={handleCloseAssessment} 
+            />
           </DialogContent>
         </Dialog>
       </>
@@ -160,7 +164,11 @@ function BeautyRiskAdvisor({ beautyRisk }: BeautyRiskAdvisorProps) {
 
       <Dialog open={showAssessment} onOpenChange={setShowAssessment}>
         <DialogContent className="sm:max-w-[600px]">
-          <BeautyRiskAssessment onComplete={handleCloseAssessment} />
+          <BeautyRiskAssessment 
+            open={showAssessment}
+            onClose={setShowAssessment}
+            onComplete={handleCloseAssessment} 
+          />
         </DialogContent>
       </Dialog>
     </>

@@ -97,6 +97,62 @@ export const ourFileRouter = {
         throw error;
       }
     }),
+
+  workshopRecording: f({
+    video: { 
+      maxFileSize: "512MB",
+      maxFileCount: 1,
+    }
+  })
+    .middleware(async ({ req }) => {
+      try {
+        const auth = await handleAuth();
+        const workshopId = req.headers.get("x-workshop-id");
+        
+        if (!workshopId) {
+          throw new Error("Workshop ID is required");
+        }
+
+        const workshop = await prisma.workshop.findUnique({
+          where: { id: workshopId },
+          select: { hostId: true },
+        });
+
+        if (!workshop) {
+          throw new Error("Workshop not found");
+        }
+
+        if (workshop.hostId !== auth.userId) {
+          throw new Error("Only the host can upload recordings");
+        }
+
+        return { ...auth, workshopId };
+      } catch (error) {
+        logger.error("Error in workshop recording upload middleware:", error);
+        throw error;
+      }
+    })
+    .onUploadComplete(async ({ metadata, file }) => {
+      try {
+        await prisma.workshop.update({
+          where: { id: metadata.workshopId },
+          data: {
+            recording: file.url,
+            status: 'COMPLETED',
+          },
+        });
+
+        logger.info({
+          event: "workshop_recording_uploaded",
+          userId: metadata.userId,
+          workshopId: metadata.workshopId,
+          fileUrl: file.url,
+        });
+      } catch (error) {
+        logger.error("Error updating workshop with recording:", error);
+        throw error;
+      }
+    }),
 } satisfies FileRouter;
 
 export type OurFileRouter = typeof ourFileRouter;

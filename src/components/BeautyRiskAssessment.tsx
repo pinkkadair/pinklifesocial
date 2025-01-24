@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Dispatch, SetStateAction } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
@@ -103,10 +103,11 @@ type FormData = z.infer<typeof formSchema>;
 
 interface BeautyRiskAssessmentProps {
   open: boolean;
-  onClose: (updated?: boolean) => void;
+  onClose: Dispatch<SetStateAction<boolean>>;
+  onComplete: () => void;
 }
 
-function BeautyRiskAssessment({ open, onClose }: BeautyRiskAssessmentProps) {
+function BeautyRiskAssessment({ open, onClose, onComplete }: BeautyRiskAssessmentProps) {
   const router = useRouter();
   const { data: session } = useSession();
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -159,7 +160,8 @@ function BeautyRiskAssessment({ open, onClose }: BeautyRiskAssessmentProps) {
       }
 
       toast.success("Beauty risk assessment saved successfully");
-      onClose(true);
+      onClose(false);
+      onComplete();
     } catch (error) {
       console.error("Error saving assessment:", error);
       toast.error(error instanceof Error ? error.message : "Failed to save assessment");
@@ -183,8 +185,13 @@ function BeautyRiskAssessment({ open, onClose }: BeautyRiskAssessmentProps) {
             <p className="text-muted-foreground mb-4">
               Beauty risk assessment is available for Pink U and VIP members only.
             </p>
-            <MembershipDialog>
-              <Button>Upgrade Membership</Button>
+            <MembershipDialog 
+              currentTier={session?.user?.subscriptionTier || "FREE"}
+              onClose={() => {}}
+            >
+              <Button variant="default" className="w-full">
+                Upgrade for Advanced Analysis
+              </Button>
             </MembershipDialog>
           </div>
         ) : (

@@ -206,6 +206,13 @@ export default function VIPSection({ isVIP, isPinkU }: VIPSectionProps) {
         open={showAssessment}
         onClose={(updated) => {
           setShowAssessment(false);
+          if (updated) {
+            // Refresh data if needed
+          }
+        }}
+        onComplete={() => {
+          setShowAssessment(false);
+          // Refresh data if needed
         }}
       />
     </div>
