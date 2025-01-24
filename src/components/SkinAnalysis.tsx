@@ -8,6 +8,7 @@ import { CameraIcon, XIcon } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { mlManager } from '@/lib/ml-models';
 import { logger } from '@/lib/logger';
+import { analyzeSkinFeatures, SkinAnalysisResult } from '@/lib/skin-analysis';
 
 // Only import WebcamCapture dynamically since it directly uses browser APIs
 const WebcamCapture = dynamic(() => import('./WebcamCapture'), {
@@ -93,7 +94,7 @@ export default function SkinAnalysis({
     setIsCameraReady(false);
   }, []);
 
-  const processCaptures = async (imagesToProcess: ImageData[]): Promise<SkinMetric[] | null> => {
+  const processCaptures = async (imagesToProcess: ImageData[]): Promise<SkinMetric[]> => {
     try {
       const results = await Promise.all(
         imagesToProcess.map(async (imageData) => {
@@ -102,32 +103,63 @@ export default function SkinAnalysis({
             throw new Error('No face detected in image');
           }
 
-          const [textureScore, toneScore] = await Promise.all([
-            mlManager.analyzeSkinTexture(imageData, face),
-            mlManager.analyzeSkinTone(imageData, face),
-          ]);
-
-          return {
-            texture: textureScore,
-            tone: toneScore,
-          };
+          const analysisResult = await analyzeSkinFeatures(imageData, face);
+          return analysisResult;
         })
       );
 
       // Average the results
-      const avgTexture = results.reduce((sum, r) => sum + r.texture, 0) / results.length;
-      const avgTone = results.reduce((sum, r) => sum + r.tone, 0) / results.length;
+      const avgResult: SkinAnalysisResult = {
+        hydration: results.reduce((sum, r) => sum + r.hydration, 0) / results.length,
+        elasticity: results.reduce((sum, r) => sum + r.elasticity, 0) / results.length,
+        texture: results.reduce((sum, r) => sum + r.texture, 0) / results.length,
+        pores: results.reduce((sum, r) => sum + r.pores, 0) / results.length,
+        wrinkles: results.reduce((sum, r) => sum + r.wrinkles, 0) / results.length,
+        spots: results.reduce((sum, r) => sum + r.spots, 0) / results.length,
+        uniformity: results.reduce((sum, r) => sum + r.uniformity, 0) / results.length,
+        brightness: results.reduce((sum, r) => sum + r.brightness, 0) / results.length,
+      };
 
       return [
         {
-          name: 'Skin Texture',
-          value: avgTexture,
-          description: 'Analysis of skin surface texture and evenness',
+          name: 'Hydration',
+          value: avgResult.hydration,
+          description: 'Skin moisture level and barrier function',
         },
         {
-          name: 'Skin Tone',
-          value: avgTone,
-          description: 'Analysis of skin tone and color distribution',
+          name: 'Elasticity',
+          value: avgResult.elasticity,
+          description: 'Skin firmness and bounce',
+        },
+        {
+          name: 'Texture',
+          value: avgResult.texture,
+          description: 'Surface smoothness and evenness',
+        },
+        {
+          name: 'Pores',
+          value: avgResult.pores,
+          description: 'Pore size and visibility',
+        },
+        {
+          name: 'Wrinkles',
+          value: avgResult.wrinkles,
+          description: 'Fine lines and wrinkle analysis',
+        },
+        {
+          name: 'Spots',
+          value: avgResult.spots,
+          description: 'Pigmentation and dark spots',
+        },
+        {
+          name: 'Uniformity',
+          value: avgResult.uniformity,
+          description: 'Even skin tone distribution',
+        },
+        {
+          name: 'Brightness',
+          value: avgResult.brightness,
+          description: 'Overall skin radiance',
         },
       ];
     } catch (error) {
@@ -249,84 +281,62 @@ export default function SkinAnalysis({
       setError('Failed to capture image. Please try again.');
       setIsAnalyzing(false);
       setProgress(0);
-      if (captureCount === 0) {
-        onAnalysisEnd();
-      }
     }
   }, [webcamRef, isCameraReady, isAnalyzing, captureCount, captures, onAnalysisComplete, onAnalysisEnd, onStartAnalysis, resetState]);
 
   if (isModelLoading) {
     return (
-      <Card className="p-6 text-center">
-        <div className="space-y-4">
-          <p>Loading skin analysis models...</p>
-          <Progress value={50} className="w-full" />
-        </div>
-      </Card>
-    );
-  }
-
-  if (error) {
-    return (
-      <Card className="p-6">
-        <div className="space-y-4">
-          <p className="text-red-500">{error}</p>
-          <Button onClick={resetState}>Try Again</Button>
-        </div>
-      </Card>
+      <div className="flex items-center justify-center p-8">
+        <Progress value={progress} className="w-full" />
+        <p className="text-sm text-muted-foreground mt-2">Loading analysis models...</p>
+      </div>
     );
   }
 
   return (
-    <Card className="p-6">
-      <div className="space-y-4">
-        {!showCamera ? (
+    <div className="space-y-4">
+      {error && (
+        <div className="bg-destructive/10 text-destructive p-3 rounded-md text-sm">
+          {error}
+        </div>
+      )}
+
+      {showCamera ? (
+        <div className="relative">
+          <WebcamCapture
+            ref={webcamRef}
+            onUserMedia={handleUserMedia}
+            onUserMediaError={handleUserMediaError}
+          />
           <Button
-            onClick={() => setShowCamera(true)}
-            disabled={isModelLoading}
-            className="w-full"
+            variant="outline"
+            size="icon"
+            className="absolute top-2 right-2"
+            onClick={() => setShowCamera(false)}
           >
-            <CameraIcon className="w-4 h-4 mr-2" />
-            Start Skin Analysis
+            <XIcon className="h-4 w-4" />
           </Button>
-        ) : (
-          <div className="space-y-4">
-            <div className="relative">
-              <WebcamCapture
-                webcamRef={webcamRef}
-                onUserMedia={handleUserMedia}
-                onUserMediaError={handleUserMediaError}
-              />
-              <Button
-                variant="ghost"
-                size="icon"
-                className="absolute top-2 right-2"
-                onClick={() => {
-                  setShowCamera(false);
-                  onAnalysisEnd();
-                }}
-              >
-                <XIcon className="w-4 h-4" />
-              </Button>
-            </div>
-            
-            {isCameraReady && (
-              <div className="space-y-4">
-                <Button
-                  onClick={handleCapture}
-                  disabled={isAnalyzing}
-                  className="w-full"
-                >
-                  {isAnalyzing ? 'Processing...' : `Capture Image ${captureCount + 1}/3`}
-                </Button>
-                {(isAnalyzing || progress > 0) && (
-                  <Progress value={progress} className="w-full" />
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </Card>
+          <Button
+            className="mt-4 w-full"
+            onClick={handleCapture}
+            disabled={!isCameraReady || isAnalyzing}
+          >
+            {isAnalyzing ? 'Analyzing...' : `Capture ${captureCount + 1}/3`}
+          </Button>
+          {(isAnalyzing || progress > 0) && (
+            <Progress value={progress} className="mt-2" />
+          )}
+        </div>
+      ) : (
+        <Button
+          className="w-full"
+          onClick={() => setShowCamera(true)}
+          disabled={isModelLoading}
+        >
+          <CameraIcon className="mr-2 h-4 w-4" />
+          Start Camera
+        </Button>
+      )}
+    </div>
   );
 } 

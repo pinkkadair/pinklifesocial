@@ -66,6 +66,8 @@ model User {
   notifications        Notification[]     @relation("userNotifications")
   posts                Post[]
   sessions             Session[]
+  hostedWorkshops       Workshop[]       @relation("WorkshopHost")
+  attendedWorkshops     Workshop[]       @relation("WorkshopAttendees")
 }
 
 model VerificationToken {
@@ -291,4 +293,26 @@ enum SubscriptionTier {
   FREE
   PINKU
   VIP
+}
+
+// Workshop and scheduling models
+model Workshop {
+  id          String      @id @default(cuid())
+  title       String
+  description String
+  startTime   DateTime
+  endTime     DateTime
+  maxAttendees Int
+  host        User        @relation("WorkshopHost", fields: [hostId], references: [id])
+  hostId      String
+  attendees   User[]      @relation("WorkshopAttendees")
+  category    String
+  level       String      @default("BEGINNER")
+  status      String      @default("SCHEDULED") // SCHEDULED, CANCELLED, COMPLETED
+  recording   String?     // URL to recorded session
+  materials   String?     // URL to workshop materials
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([hostId])
 }
