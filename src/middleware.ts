@@ -1,75 +1,107 @@
-import { withAuth } from "next-auth/middleware";
-import { NextResponse } from "next/server";
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+import { getToken } from 'next-auth/jwt';
 
-export default withAuth(
-  async function middleware(req) {
-    const token = req.nextauth.token;
-    const path = req.nextUrl.pathname;
+// Routes that don't require authentication
+const publicRoutes = [
+  '/sign-in',
+  '/sign-up',
+  '/api/auth',
+  '/api/health',
+  '/_next',
+  '/favicon.ico',
+];
 
-    // Sync user data if authenticated (except for API routes)
-    if (token?.email && 
-        !path.startsWith('/api') && 
-        !path.startsWith('/_next') && 
-        !path.startsWith('/static')) {
-      try {
-        await fetch(`${req.nextUrl.origin}/api/sync-user`, {
-          method: 'POST',
-          headers: {
-            'Cookie': req.headers.get('cookie') || '',
-          },
-        });
-      } catch (error) {
-        console.error('Error syncing user:', error);
-      }
-    }
+// Routes that require specific subscription tiers
+const restrictedRoutes = {
+  '/workshop': ['PINKU', 'VIP'],
+  '/analytics': ['VIP'],
+};
 
-    // Allow public profile views
-    if (path.startsWith("/profile/")) {
-      return NextResponse.next();
-    }
+export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
 
-    // VIP-only routes
-    if (path.startsWith("/vip") && token?.subscriptionTier !== "VIP") {
-      return NextResponse.redirect(new URL("/profile", req.url));
-    }
-
-    // Pink U or VIP routes
-    if (path.startsWith("/beauty-risk") && token?.subscriptionTier === "FREE") {
-      return NextResponse.redirect(new URL("/profile", req.url));
-    }
-
-    return NextResponse.next();
-  },
-  {
-    callbacks: {
-      authorized: ({ req, token }) => {
-        // Allow public profile views without authentication
-        if (req.nextUrl.pathname.startsWith("/profile/")) {
-          return true;
-        }
-        return !!token;
-      },
-    },
-    pages: {
-      signIn: "/sign-in",
-    },
+  // Allow public routes
+  if (publicRoutes.some(route => pathname.startsWith(route))) {
+    return addSecurityHeaders(NextResponse.next());
   }
-);
+
+  // Check authentication
+  const token = await getToken({ req: request });
+  if (!token) {
+    return redirectToLogin(request);
+  }
+
+  // Check subscription requirements
+  for (const [route, tiers] of Object.entries(restrictedRoutes)) {
+    if (pathname.startsWith(route) && !tiers.includes(token.subscriptionTier as string)) {
+      return NextResponse.redirect(new URL('/membership', request.url));
+    }
+  }
+
+  // Add user info to headers for logging
+  const requestHeaders = new Headers(request.headers);
+  requestHeaders.set('x-user-id', token.sub as string);
+  requestHeaders.set('x-user-role', token.subscriptionTier as string);
+
+  // Continue with added security headers
+  const response = NextResponse.next({
+    request: {
+      headers: requestHeaders,
+    },
+  });
+
+  return addSecurityHeaders(response);
+}
+
+function addSecurityHeaders(response: NextResponse) {
+  const headers = response.headers;
+
+  // Security headers
+  headers.set('X-DNS-Prefetch-Control', 'on');
+  headers.set('Strict-Transport-Security', 'max-age=63072000; includeSubDomains; preload');
+  headers.set('X-Frame-Options', 'DENY');
+  headers.set('X-Content-Type-Options', 'nosniff');
+  headers.set('X-XSS-Protection', '1; mode=block');
+  headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  
+  // Content Security Policy
+  headers.set(
+    'Content-Security-Policy',
+    [
+      "default-src 'self'",
+      "img-src 'self' https: data: blob:",
+      "media-src 'self' https: data: blob:",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+      "style-src 'self' 'unsafe-inline'",
+      "font-src 'self' data:",
+      "connect-src 'self' https: wss:",
+      "frame-ancestors 'none'",
+      "form-action 'self'",
+      "base-uri 'self'",
+    ].join('; ')
+  );
+
+  return response;
+}
+
+function redirectToLogin(request: NextRequest) {
+  const loginUrl = new URL('/sign-in', request.url);
+  loginUrl.searchParams.set('callbackUrl', request.url);
+  return NextResponse.redirect(loginUrl);
+}
 
 export const config = {
   matcher: [
     /*
-     * Match all paths that require protection or synchronization:
-     * - /settings/* - Protected settings pages
-     * - /kris-says/ask - Protected ask feature
-     * - /beauty-risk/* - Protected beauty risk features
-     * - /vip/* - VIP-only features
-     * - /profile - Just the main profile page, not username-specific pages
+     * Match all request paths except:
+     * 1. /api/auth/* (auth endpoints)
+     * 2. /api/health (health check endpoint)
+     * 3. /_next/static (static files)
+     * 4. /_next/image (image optimization files)
+     * 5. /favicon.ico (favicon file)
      */
-    "/settings/:path*",
-    "/kris-says/ask",
-    "/beauty-risk/:path*",
-    "/vip/:path*",
-    "/profile",
+    '/((?!api/auth|api/health|_next/static|_next/image|favicon.ico).*)',
   ],
 };

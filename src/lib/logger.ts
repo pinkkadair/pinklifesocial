@@ -1,106 +1,101 @@
-type LogLevel = 'info' | 'warn' | 'error';
+import pino from 'pino';
 
-interface LogEntry {
-  timestamp: string;
-  level: LogLevel;
-  message: string;
-  context?: Record<string, any>;
-  error?: Error;
-}
+const isDevelopment = process.env.NODE_ENV === 'development';
 
-class Logger {
-  private static instance: Logger;
-  private logs: LogEntry[] = [];
-  private readonly maxLogs = 1000;
+// Configure logger based on environment
+const pinoConfig = {
+  level: process.env.LOG_LEVEL || 'info',
+  enabled: process.env.NODE_ENV !== 'test',
+  formatters: {
+    level: (label: string) => ({ level: label }),
+    bindings: () => ({}),
+  },
+  timestamp: () => `,"time":"${new Date().toISOString()}"`,
+  browser: {
+    asObject: true,
+  },
+  redact: {
+    paths: [
+      'password',
+      'email',
+      '*.password',
+      '*.email',
+      'headers.authorization',
+      'req.headers.authorization',
+      'body.password',
+      'body.token',
+      'data.password',
+      'data.token',
+    ],
+    remove: true,
+  },
+};
 
-  private constructor() {}
+// Create logger instance without worker threads for Next.js compatibility
+export const logger = isDevelopment
+  ? pino({
+      ...pinoConfig,
+      transport: {
+        target: 'pino-pretty',
+        options: {
+          colorize: true,
+        },
+      },
+    })
+  : pino({
+      ...pinoConfig,
+      // Disable worker threads in production
+      browser: {
+        ...pinoConfig.browser,
+        write: (o) => {
+          // In production, you might want to send logs to a logging service
+          // For now, we'll just use console
+          console.log(JSON.stringify(o));
+        },
+      },
+    });
 
-  static getInstance(): Logger {
-    if (!Logger.instance) {
-      Logger.instance = new Logger();
-    }
-    return Logger.instance;
-  }
-
-  private formatError(error: unknown): Record<string, any> {
-    if (error instanceof Error) {
-      return {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-        cause: error.cause,
-      };
-    }
-    return {
-      name: 'UnknownError',
-      message: String(error),
-      stack: 'No stack trace available',
+// Enhanced request logging middleware
+export const withLogging = (handler: Function) => {
+  return async (...args: any[]) => {
+    const request = args[0];
+    const requestId = request.headers.get('x-request-id') || crypto.randomUUID();
+    const startTime = Date.now();
+    const requestData = {
+      requestId,
+      method: request.method,
+      url: request.url,
+      userAgent: request.headers.get('user-agent'),
+      referer: request.headers.get('referer'),
+      ip: request.headers.get('x-forwarded-for') || request.headers.get('x-real-ip'),
     };
-  }
 
-  private createLogEntry(
-    level: LogLevel,
-    message: string,
-    context?: Record<string, any>,
-    error?: unknown
-  ): LogEntry {
-    const entry: LogEntry = {
-      timestamp: new Date().toISOString(),
-      level,
-      message,
-      context,
-    };
+    try {
+      logger.info({ ...requestData, event: 'request_started' }, 'Request started');
+      
+      const result = await handler(...args);
+      
+      logger.info({
+        ...requestData,
+        event: 'request_completed',
+        statusCode: result.status,
+        duration: Date.now() - startTime,
+      }, 'Request completed');
 
-    if (error) {
-      entry.error = error instanceof Error ? error : new Error(String(error));
-      entry.context = {
-        ...entry.context,
-        error: this.formatError(error),
-      };
+      return result;
+    } catch (error) {
+      logger.error({
+        ...requestData,
+        event: 'request_failed',
+        error: error instanceof Error ? {
+          name: error.name,
+          message: error.message,
+          stack: isDevelopment ? error.stack : undefined,
+        } : 'Unknown error',
+        duration: Date.now() - startTime,
+      }, 'Request failed');
+
+      throw error;
     }
-
-    return entry;
-  }
-
-  private log(entry: LogEntry): void {
-    // Add to logs array
-    this.logs.push(entry);
-
-    // Keep only the last maxLogs entries
-    if (this.logs.length > this.maxLogs) {
-      this.logs = this.logs.slice(-this.maxLogs);
-    }
-
-    // Log to console in development
-    if (process.env.NODE_ENV === 'development') {
-      const { timestamp, level, message, context, error } = entry;
-      console[level](
-        `[${timestamp}] ${level.toUpperCase()}: ${message}`,
-        context ? { context } : '',
-        error ? { error } : ''
-      );
-    }
-  }
-
-  info(message: string, context?: Record<string, any>): void {
-    this.log(this.createLogEntry('info', message, context));
-  }
-
-  warn(message: string, context?: Record<string, any>): void {
-    this.log(this.createLogEntry('warn', message, context));
-  }
-
-  error(message: string, error?: unknown, context?: Record<string, any>): void {
-    this.log(this.createLogEntry('error', message, context, error));
-  }
-
-  getLogs(): LogEntry[] {
-    return [...this.logs];
-  }
-
-  clearLogs(): void {
-    this.logs = [];
-  }
-}
-
-export const logger = Logger.getInstance(); 
+  };
+}; 
