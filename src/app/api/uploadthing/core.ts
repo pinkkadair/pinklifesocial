@@ -1,29 +1,99 @@
 import { createUploadthing, type FileRouter } from "uploadthing/next";
-import { auth } from "@clerk/nextjs/server";
+import { getServerSession } from "next-auth";
+import { authOptions } from "@/lib/auth";
+import { prisma } from "@/lib/prisma";
+import { logger } from "@/lib/logger";
 
 const f = createUploadthing();
 
+const handleAuth = async () => {
+  const session = await getServerSession(authOptions);
+  if (!session?.user?.email) {
+    throw new Error("Unauthorized");
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { email: session.user.email },
+  });
+  if (!user) {
+    throw new Error("User not found");
+  }
+
+  return { userId: user.id };
+};
+
 export const ourFileRouter = {
-  // define routes for different upload types
-  postImage: f({
-    image: {
+  profileImage: f({
+    image: { 
       maxFileSize: "4MB",
       maxFileCount: 1,
-    },
+    }
   })
     .middleware(async () => {
-      // this code runs on your server before upload
-      const { userId } = await auth();
-      if (!userId) throw new Error("Unauthorized");
-
-      // whatever is returned here is accessible in onUploadComplete as `metadata`
-      return { userId };
+      try {
+        return await handleAuth();
+      } catch (error) {
+        logger.error("Error in upload middleware:", error);
+        throw error;
+      }
     })
     .onUploadComplete(async ({ metadata, file }) => {
       try {
-        return { fileUrl: file.url };
+        logger.info("Starting file upload completion", { fileUrl: file.url });
+        
+        if (!file.url) {
+          logger.error("No file URL in upload response");
+          throw new Error("No file URL received");
+        }
+
+        // First verify the user still exists
+        const user = await prisma.user.findUnique({
+          where: { id: metadata.userId },
+          select: { id: true }
+        });
+
+        if (!user) {
+          logger.error("User not found during image update", { userId: metadata.userId });
+          throw new Error("User not found");
+        }
+
+        // Update the user's image
+        const updatedUser = await prisma.user.update({
+          where: { id: metadata.userId },
+          data: { 
+            image: file.url,
+            updatedAt: new Date() // Force an update to the timestamp
+          },
+          select: { id: true, image: true }
+        });
+        
+        logger.info("User image updated successfully", { 
+          userId: updatedUser.id,
+          imageUrl: updatedUser.image 
+        });
+        
+        if (!updatedUser.image) {
+          logger.error("Image URL not saved in database");
+          throw new Error("Failed to update profile image");
+        }
+        
+        // Verify the update was successful
+        const verifiedUser = await prisma.user.findUnique({
+          where: { id: metadata.userId },
+          select: { image: true }
+        });
+
+        if (verifiedUser?.image !== file.url) {
+          logger.error("Image URL verification failed", {
+            expected: file.url,
+            actual: verifiedUser?.image
+          });
+          throw new Error("Failed to verify image update");
+        }
+        
+        return { url: file.url };
       } catch (error) {
-        console.error("Error in onUploadComplete:", error);
+        logger.error("Error updating user image:", error);
         throw error;
       }
     }),

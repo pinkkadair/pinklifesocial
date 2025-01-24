@@ -1,12 +1,20 @@
-import { BellIcon, HomeIcon, UserIcon } from "lucide-react";
+'use client';
+
+import { BellIcon, HomeIcon, UserIcon, MessageCircleIcon, LogOutIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
-import { SignInButton, UserButton } from "@clerk/nextjs";
+import { useSession, signIn, signOut } from "next-auth/react";
 import ModeToggle from "./ModeToggle";
-import { currentUser } from "@clerk/nextjs/server";
+import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
-async function DesktopNavbar() {
-  const user = await currentUser();
+export default function DesktopNavbar() {
+  const { data: session } = useSession();
 
   return (
     <div className="hidden md:flex items-center space-x-4">
@@ -19,7 +27,14 @@ async function DesktopNavbar() {
         </Link>
       </Button>
 
-      {user ? (
+      <Button variant="ghost" className="flex items-center gap-2" asChild>
+        <Link href="/kris-says">
+          <MessageCircleIcon className="w-4 h-4" />
+          <span className="hidden lg:inline">Kris Says</span>
+        </Link>
+      </Button>
+
+      {session?.user ? (
         <>
           <Button variant="ghost" className="flex items-center gap-2" asChild>
             <Link href="/notifications">
@@ -28,23 +43,31 @@ async function DesktopNavbar() {
             </Link>
           </Button>
           <Button variant="ghost" className="flex items-center gap-2" asChild>
-            <Link
-              href={`/profile/${
-                user.username ?? user.emailAddresses[0].emailAddress.split("@")[0]
-              }`}
-            >
+            <Link href={`/profile/${session.user.username}`}>
               <UserIcon className="w-4 h-4" />
               <span className="hidden lg:inline">Profile</span>
             </Link>
           </Button>
-          <UserButton />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" className="relative h-8 w-8 rounded-full">
+                <Avatar className="h-8 w-8">
+                  <AvatarImage src={session.user.image || ""} alt={session.user.name || ""} />
+                  <AvatarFallback>{session.user.name?.[0] || "U"}</AvatarFallback>
+                </Avatar>
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem onClick={() => signOut()}>
+                <LogOutIcon className="mr-2 h-4 w-4" />
+                <span>Sign out</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </>
       ) : (
-        <SignInButton mode="modal">
-          <Button variant="default">Sign In</Button>
-        </SignInButton>
+        <Button onClick={() => signIn()}>Sign In</Button>
       )}
     </div>
   );
 }
-export default DesktopNavbar;

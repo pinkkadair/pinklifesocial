@@ -1,86 +1,121 @@
 "use server";
 
-import prisma from "@/lib/prisma";
-import { auth, currentUser } from "@clerk/nextjs/server";
+import { prisma } from "@/lib/prisma";
+import { getServerSession } from "next-auth";
 import { revalidatePath } from "next/cache";
 
 export async function syncUser() {
   try {
-    const { userId } = await auth();
-    const user = await currentUser();
+    const session = await getServerSession();
+    if (!session?.user?.email) {
+      console.log("No session found in syncUser");
+      return null;
+    }
 
-    if (!userId || !user) return;
-
+    console.log("Checking for existing user with email:", session.user.email);
     const existingUser = await prisma.user.findUnique({
       where: {
-        clerkId: userId,
+        email: session.user.email,
       },
     });
 
-    if (existingUser) return existingUser;
+    if (existingUser) {
+      console.log("Existing user found, returning user");
+      return existingUser;
+    }
 
+    console.log("Creating new user for email:", session.user.email);
     const dbUser = await prisma.user.create({
       data: {
-        clerkId: userId,
-        name: `${user.firstName || ""} ${user.lastName || ""}`,
-        username: user.username ?? user.emailAddresses[0].emailAddress.split("@")[0],
-        email: user.emailAddresses[0].emailAddress,
-        image: user.imageUrl,
+        email: session.user.email,
+        name: session.user.name || "",
+        username: session.user.email.split("@")[0],
+        image: session.user.image || "",
+        subscriptionTier: 'FREE',
       },
     });
 
+    console.log("New user created successfully");
     return dbUser;
   } catch (error) {
-    console.log("Error in syncUser", error);
+    console.error("Error in syncUser:", error);
+    return null;
   }
 }
 
-export async function getUserByClerkId(clerkId: string) {
-  return prisma.user.findUnique({
-    where: {
-      clerkId,
-    },
-    include: {
-      _count: {
-        select: {
-          followers: true,
-          following: true,
-          posts: true,
-        },
-      },
-    },
-  });
-}
-
 export async function getDbUserId() {
-  const { userId: clerkId } = await auth();
-  if (!clerkId) return null;
+  try {
+    const session = await getServerSession();
+    if (!session?.user?.email) {
+      console.log("No session found in getDbUserId");
+      return null;
+    }
 
-  const user = await getUserByClerkId(clerkId);
+    console.log("Looking up user ID for email:", session.user.email);
+    const user = await prisma.user.findUnique({
+      where: {
+        email: session.user.email,
+      },
+      select: {
+        id: true,
+      },
+    });
 
-  if (!user) throw new Error("User not found");
+    if (!user) {
+      console.log("No user found for email:", session.user.email);
+      return null;
+    }
 
-  return user.id;
+    return user.id;
+  } catch (error) {
+    console.error("Error in getDbUserId:", error);
+    return null;
+  }
 }
 
 export async function getRandomUsers() {
   try {
-    const userId = await getDbUserId();
+    const session = await getServerSession();
+    if (!session?.user?.email) {
+      console.log("No session found in getRandomUsers");
+      return [];
+    }
 
-    if (!userId) return [];
+    console.log("Finding current user and their following list");
+    const currentUser = await prisma.user.findUnique({
+      where: {
+        email: session.user.email,
+      },
+      select: {
+        id: true,
+        following: {
+          select: {
+            followingId: true,
+          },
+        },
+      },
+    });
 
-    // get 3 random users exclude ourselves & users that we already follow
-    const randomUsers = await prisma.user.findMany({
+    if (!currentUser) {
+      console.log("Current user not found in database");
+      return [];
+    }
+
+    const followingIds = currentUser.following.map((f) => f.followingId);
+    followingIds.push(currentUser.id); // Add current user to exclude list
+
+    console.log("Fetching random users excluding current user and following");
+    const users = await prisma.user.findMany({
       where: {
         AND: [
-          { NOT: { id: userId } },
           {
-            NOT: {
-              followers: {
-                some: {
-                  followerId: userId,
-                },
-              },
+            id: {
+              notIn: followingIds,
+            },
+          },
+          {
+            email: {
+              not: session.user.email,
             },
           },
         ],
@@ -93,70 +128,117 @@ export async function getRandomUsers() {
         _count: {
           select: {
             followers: true,
+            following: true,
           },
         },
       },
       take: 3,
+      orderBy: {
+        followers: {
+          _count: "desc",
+        },
+      },
     });
 
-    return randomUsers;
+    console.log(`Found ${users.length} random users to suggest`);
+    return users;
   } catch (error) {
-    console.log("Error fetching random users", error);
+    console.error("Error in getRandomUsers:", error);
     return [];
   }
 }
 
 export async function toggleFollow(targetUserId: string) {
   try {
-    const userId = await getDbUserId();
+    const session = await getServerSession();
+    if (!session?.user?.email) {
+      console.log("No session found in toggleFollow");
+      throw new Error("Unauthorized");
+    }
 
-    if (!userId) return;
+    console.log("Looking up current user");
+    const currentUser = await prisma.user.findUnique({
+      where: {
+        email: session.user.email,
+      },
+      select: {
+        id: true,
+      },
+    });
 
-    if (userId === targetUserId) throw new Error("You cannot follow yourself");
+    if (!currentUser) {
+      console.log("Current user not found in database");
+      throw new Error("User not found");
+    }
 
+    console.log("Checking existing follow relationship");
     const existingFollow = await prisma.follows.findUnique({
       where: {
         followerId_followingId: {
-          followerId: userId,
+          followerId: currentUser.id,
           followingId: targetUserId,
         },
       },
     });
 
     if (existingFollow) {
-      // unfollow
+      console.log("Removing existing follow");
       await prisma.follows.delete({
         where: {
           followerId_followingId: {
-            followerId: userId,
+            followerId: currentUser.id,
             followingId: targetUserId,
           },
         },
       });
     } else {
-      // follow
-      await prisma.$transaction([
-        prisma.follows.create({
-          data: {
-            followerId: userId,
-            followingId: targetUserId,
-          },
-        }),
+      console.log("Creating new follow");
+      await prisma.follows.create({
+        data: {
+          followerId: currentUser.id,
+          followingId: targetUserId,
+        },
+      });
 
-        prisma.notification.create({
-          data: {
-            type: "FOLLOW",
-            userId: targetUserId, // user being followed
-            creatorId: userId, // user following
-          },
-        }),
-      ]);
+      console.log("Creating follow notification");
+      await prisma.notification.create({
+        data: {
+          userId: targetUserId,
+          creatorId: currentUser.id,
+          type: "FOLLOW",
+        },
+      });
     }
 
     revalidatePath("/");
     return { success: true };
   } catch (error) {
-    console.log("Error in toggleFollow", error);
-    return { success: false, error: "Error toggling follow" };
+    console.error("Error in toggleFollow:", error);
+    return { success: false, error: "Failed to toggle follow" };
+  }
+}
+
+export async function updateSubscriptionTier(tier: 'PINKU' | 'VIP') {
+  try {
+    const session = await getServerSession();
+    if (!session?.user?.email) {
+      console.log("No session found in updateSubscriptionTier");
+      return { success: false, error: "Unauthorized" };
+    }
+
+    console.log(`Updating subscription tier to ${tier} for email:`, session.user.email);
+    const user = await prisma.user.update({
+      where: { email: session.user.email },
+      data: {
+        subscriptionTier: tier,
+      },
+    });
+
+    console.log("Subscription tier updated successfully");
+    revalidatePath("/profile");
+    return { success: true, user };
+  } catch (error) {
+    console.error("Error updating subscription tier:", error);
+    return { success: false, error: "Failed to update subscription tier" };
   }
 }

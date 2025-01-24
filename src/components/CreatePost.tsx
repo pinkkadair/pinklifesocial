@@ -1,110 +1,105 @@
 "use client";
 
-import { useUser } from "@clerk/nextjs";
+import { createPost } from "@/actions/post.action";
+import { useSession } from "next-auth/react";
 import { useState } from "react";
+import toast from "react-hot-toast";
 import { Card, CardContent } from "./ui/card";
 import { Avatar, AvatarImage } from "./ui/avatar";
+import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import { ImageIcon, Loader2Icon, SendIcon } from "lucide-react";
-import { Button } from "./ui/button";
-import { createPost } from "@/actions/post.action";
-import toast from "react-hot-toast";
-import ImageUpload from "./ImageUpload";
+import { UploadButton } from "@/lib/uploadthing";
 
-function CreatePost() {
-  const { user } = useUser();
+export default function CreatePost() {
+  const { data: session } = useSession();
   const [content, setContent] = useState("");
-  const [imageUrl, setImageUrl] = useState("");
-  const [isPosting, setIsPosting] = useState(false);
-  const [showImageUpload, setShowImageUpload] = useState(false);
+  const [image, setImage] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = async () => {
-    if (!content.trim() && !imageUrl) return;
+    if (!content.trim() || isSubmitting) return;
 
-    setIsPosting(true);
     try {
-      const result = await createPost(content, imageUrl);
+      setIsSubmitting(true);
+      const result = await createPost(content, image);
       if (result?.success) {
-        // reset the form
-        setContent("");
-        setImageUrl("");
-        setShowImageUpload(false);
-
         toast.success("Post created successfully");
+        setContent("");
+        setImage("");
+      } else {
+        toast.error(result?.error || "Failed to create post");
       }
     } catch (error) {
-      console.error("Failed to create post:", error);
-      toast.error("Failed to create post");
+      toast.error("Error creating post");
     } finally {
-      setIsPosting(false);
+      setIsSubmitting(false);
     }
   };
 
   return (
     <Card className="mb-6">
-      <CardContent className="pt-6">
-        <div className="space-y-4">
-          <div className="flex space-x-4">
-            <Avatar className="w-10 h-10">
-              <AvatarImage src={user?.imageUrl || "/avatar.png"} />
-            </Avatar>
+      <CardContent className="p-4">
+        <div className="flex gap-4">
+          <Avatar className="h-10 w-10">
+            <AvatarImage src={session?.user?.image || ""} alt={session?.user?.name || ""} />
+          </Avatar>
+          <div className="flex-1 space-y-4">
             <Textarea
               placeholder="What's on your mind?"
-              className="min-h-[100px] resize-none border-none focus-visible:ring-0 p-0 text-base"
               value={content}
               onChange={(e) => setContent(e.target.value)}
-              disabled={isPosting}
+              rows={3}
             />
-          </div>
-
-          {(showImageUpload || imageUrl) && (
-            <div className="border rounded-lg p-4">
-              <ImageUpload
+            {image && (
+              <div className="relative">
+                <img
+                  src={image}
+                  alt="Upload preview"
+                  className="rounded-lg border object-cover max-h-[300px] w-full"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute top-2 right-2 bg-background/80 hover:bg-background/60"
+                  onClick={() => setImage("")}
+                >
+                  <ImageIcon className="h-4 w-4" />
+                </Button>
+              </div>
+            )}
+            <div className="flex justify-between items-center">
+              <UploadButton
                 endpoint="postImage"
-                value={imageUrl}
-                onChange={(url) => {
-                  setImageUrl(url);
-                  if (!url) setShowImageUpload(false);
+                onClientUploadComplete={(res) => {
+                  setImage(res?.[0]?.url || "");
+                  toast.success("Image uploaded successfully");
+                }}
+                onUploadError={(error: Error) => {
+                  toast.error(`Failed to upload image: ${error.message}`);
                 }}
               />
-            </div>
-          )}
-
-          <div className="flex items-center justify-between border-t pt-4">
-            <div className="flex space-x-2">
               <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground hover:text-primary"
-                onClick={() => setShowImageUpload(!showImageUpload)}
-                disabled={isPosting}
+                onClick={handleSubmit}
+                disabled={!content.trim() || isSubmitting}
+                className="gap-2"
               >
-                <ImageIcon className="size-4 mr-2" />
-                Photo
+                {isSubmitting ? (
+                  <>
+                    <Loader2Icon className="h-4 w-4 animate-spin" />
+                    Posting...
+                  </>
+                ) : (
+                  <>
+                    <SendIcon className="h-4 w-4" />
+                    Post
+                  </>
+                )}
               </Button>
             </div>
-            <Button
-              className="flex items-center"
-              onClick={handleSubmit}
-              disabled={(!content.trim() && !imageUrl) || isPosting}
-            >
-              {isPosting ? (
-                <>
-                  <Loader2Icon className="size-4 mr-2 animate-spin" />
-                  Posting...
-                </>
-              ) : (
-                <>
-                  <SendIcon className="size-4 mr-2" />
-                  Post
-                </>
-              )}
-            </Button>
           </div>
         </div>
       </CardContent>
     </Card>
   );
 }
-export default CreatePost;

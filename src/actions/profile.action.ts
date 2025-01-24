@@ -1,16 +1,25 @@
 "use server";
 
-import { auth } from "@clerk/nextjs/server";
-import prisma from "@/lib/prisma";
+import { getServerSession } from "next-auth";
+import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { getDbUserId } from "./user.action";
 
 export async function getProfileByUsername(username: string) {
+  console.log("getProfileByUsername called with:", username);
+  
+  if (!username) {
+    console.log("Username is empty");
+    throw new Error("Username is required");
+  }
+
   try {
+    console.log("Attempting to find user in database...");
     const user = await prisma.user.findUnique({
-      where: { username: username },
+      where: { username },
       select: {
         id: true,
+        email: true,
         name: true,
         username: true,
         bio: true,
@@ -18,6 +27,12 @@ export async function getProfileByUsername(username: string) {
         location: true,
         website: true,
         createdAt: true,
+        subscriptionTier: true,
+        beautyRisk: {
+          include: {
+            factors: true,
+          },
+        },
         _count: {
           select: {
             followers: true,
@@ -28,14 +43,27 @@ export async function getProfileByUsername(username: string) {
       },
     });
 
+    console.log("Database query completed. User found:", !!user);
+    if (!user) {
+      console.log(`No user found with username: ${username}`);
+      return null;
+    }
+
     return user;
   } catch (error) {
-    console.error("Error fetching profile:", error);
-    throw new Error("Failed to fetch profile");
+    console.error("Database error in getProfileByUsername:", error);
+    throw error;
   }
 }
 
 export async function getUserPosts(userId: string) {
+  console.log("getUserPosts called for userId:", userId);
+  
+  if (!userId) {
+    console.log("No userId provided to getUserPosts");
+    return [];
+  }
+
   try {
     const posts = await prisma.post.findMany({
       where: {
@@ -62,7 +90,7 @@ export async function getUserPosts(userId: string) {
             },
           },
           orderBy: {
-            createdAt: "asc",
+            createdAt: "desc",
           },
         },
         likes: {
@@ -82,14 +110,22 @@ export async function getUserPosts(userId: string) {
       },
     });
 
+    console.log(`Found ${posts.length} posts for user ${userId}`);
     return posts;
   } catch (error) {
-    console.error("Error fetching user posts:", error);
-    throw new Error("Failed to fetch user posts");
+    console.error("Error in getUserPosts:", error);
+    return [];
   }
 }
 
 export async function getUserLikedPosts(userId: string) {
+  console.log("getUserLikedPosts called for userId:", userId);
+  
+  if (!userId) {
+    console.log("No userId provided to getUserLikedPosts");
+    return [];
+  }
+
   try {
     const likedPosts = await prisma.post.findMany({
       where: {
@@ -120,7 +156,7 @@ export async function getUserLikedPosts(userId: string) {
             },
           },
           orderBy: {
-            createdAt: "asc",
+            createdAt: "desc",
           },
         },
         likes: {
@@ -140,33 +176,39 @@ export async function getUserLikedPosts(userId: string) {
       },
     });
 
+    console.log(`Found ${likedPosts.length} liked posts for user ${userId}`);
     return likedPosts;
   } catch (error) {
     console.error("Error fetching liked posts:", error);
-    throw new Error("Failed to fetch liked posts");
+    return [];
   }
 }
 
 export async function updateProfile(formData: FormData) {
   try {
-    const { userId: clerkId } = await auth();
-    if (!clerkId) throw new Error("Unauthorized");
+    const session = await getServerSession();
+    if (!session?.user?.email) {
+      console.log("No session found in updateProfile");
+      throw new Error("Unauthorized");
+    }
 
     const name = formData.get("name") as string;
     const bio = formData.get("bio") as string;
     const location = formData.get("location") as string;
     const website = formData.get("website") as string;
 
+    console.log("Updating profile for email:", session.user.email);
     const user = await prisma.user.update({
-      where: { clerkId },
+      where: { email: session.user.email },
       data: {
-        name,
-        bio,
-        location,
-        website,
+        name: name || null,
+        bio: bio || null,
+        location: location || null,
+        website: website || null,
       },
     });
 
+    console.log("Profile updated successfully");
     revalidatePath("/profile");
     return { success: true, user };
   } catch (error) {
@@ -178,7 +220,10 @@ export async function updateProfile(formData: FormData) {
 export async function isFollowing(userId: string) {
   try {
     const currentUserId = await getDbUserId();
-    if (!currentUserId) return false;
+    if (!currentUserId) {
+      console.log("No current user ID found in isFollowing");
+      return false;
+    }
 
     const follow = await prisma.follows.findUnique({
       where: {

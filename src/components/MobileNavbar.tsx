@@ -8,17 +8,19 @@ import {
   MoonIcon,
   SunIcon,
   UserIcon,
+  MessageCircleIcon,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useState } from "react";
-import { useAuth, SignInButton, SignOutButton } from "@clerk/nextjs";
+import { useSession, signIn, signOut } from "next-auth/react";
 import { useTheme } from "next-themes";
 import Link from "next/link";
+import { Logo } from "./Logo";
 
 function MobileNavbar() {
   const [showMobileMenu, setShowMobileMenu] = useState(false);
-  const { isSignedIn } = useAuth();
+  const { data: session } = useSession();
   const { theme, setTheme } = useTheme();
 
   return (
@@ -42,43 +44,67 @@ function MobileNavbar() {
         </SheetTrigger>
         <SheetContent side="right" className="w-[300px]">
           <SheetHeader>
-            <SheetTitle>Menu</SheetTitle>
+            <SheetTitle>
+              <Logo size="lg" />
+            </SheetTitle>
           </SheetHeader>
           <nav className="flex flex-col space-y-4 mt-6">
-            <Button variant="ghost" className="flex items-center gap-3 justify-start" asChild>
-              <Link href="/">
-                <HomeIcon className="w-4 h-4" />
+            <Button variant="ghost" className="justify-start" asChild>
+              <Link href="/" onClick={() => setShowMobileMenu(false)}>
+                <HomeIcon className="mr-2 h-4 w-4" />
                 Home
               </Link>
             </Button>
 
-            {isSignedIn ? (
+            <Button variant="ghost" className="justify-start" asChild>
+              <Link href="/kris-says" onClick={() => setShowMobileMenu(false)}>
+                <MessageCircleIcon className="mr-2 h-4 w-4" />
+                Kris Says
+              </Link>
+            </Button>
+
+            {session?.user ? (
               <>
-                <Button variant="ghost" className="flex items-center gap-3 justify-start" asChild>
-                  <Link href="/notifications">
-                    <BellIcon className="w-4 h-4" />
+                <Button variant="ghost" className="justify-start" asChild>
+                  <Link href="/notifications" onClick={() => setShowMobileMenu(false)}>
+                    <BellIcon className="mr-2 h-4 w-4" />
                     Notifications
                   </Link>
                 </Button>
-                <Button variant="ghost" className="flex items-center gap-3 justify-start" asChild>
-                  <Link href="/profile">
-                    <UserIcon className="w-4 h-4" />
+
+                <Button variant="ghost" className="justify-start" asChild>
+                  <Link
+                    href={`/profile/${session.user.username}`}
+                    onClick={() => setShowMobileMenu(false)}
+                  >
+                    <UserIcon className="mr-2 h-4 w-4" />
                     Profile
                   </Link>
                 </Button>
-                <SignOutButton>
-                  <Button variant="ghost" className="flex items-center gap-3 justify-start w-full">
-                    <LogOutIcon className="w-4 h-4" />
-                    Logout
-                  </Button>
-                </SignOutButton>
+
+                <Button
+                  variant="ghost"
+                  className="justify-start"
+                  onClick={() => {
+                    signOut();
+                    setShowMobileMenu(false);
+                  }}
+                >
+                  <LogOutIcon className="mr-2 h-4 w-4" />
+                  Sign out
+                </Button>
               </>
             ) : (
-              <SignInButton mode="modal">
-                <Button variant="default" className="w-full">
-                  Sign In
-                </Button>
-              </SignInButton>
+              <Button
+                variant="default"
+                className="justify-start"
+                onClick={() => {
+                  signIn();
+                  setShowMobileMenu(false);
+                }}
+              >
+                Sign In
+              </Button>
             )}
           </nav>
         </SheetContent>
