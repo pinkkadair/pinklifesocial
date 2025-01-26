@@ -1,19 +1,20 @@
 import { Suspense } from "react";
 import {
-  getProfileByUsername,
   getUserLikedPosts,
   getUserPosts,
   isFollowing,
+  getProfile,
 } from "@/actions/profile.action";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import ProfilePageClient from "./ProfilePageClient";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { logger } from "@/lib/logger";
+import { auth } from "@/lib/auth";
 
 export async function generateMetadata({ params }: { params: { username: string } }) {
   try {
     const decodedUsername = decodeURIComponent(params.username);
-    const user = await getProfileByUsername(decodedUsername);
+    const user = await getProfile(decodedUsername);
     if (!user) {
       return {
         title: "Profile Not Found",
@@ -34,56 +35,32 @@ export async function generateMetadata({ params }: { params: { username: string 
   }
 }
 
-export default async function ProfilePageServer({ params }: { params: { username: string } }) {
-  try {
-    if (!params.username) {
-      logger.error("No username provided");
-      return notFound();
-    }
-
-    // Decode username from URL
-    const decodedUsername = decodeURIComponent(params.username);
-    logger.info(`Loading profile for username: ${decodedUsername}`);
-
-    // Fetch user profile
-    const user = await getProfileByUsername(decodedUsername);
-    if (!user) {
-      logger.error(`No user found with username: ${decodedUsername}`);
-      return notFound();
-    }
-
-    // Fetch additional user data in parallel
-    const [posts, likedPosts, isCurrentUserFollowing] = await Promise.all([
-      getUserPosts(user.id).catch(error => {
-        logger.error("Error fetching posts:", error);
-        return [];
-      }),
-      getUserLikedPosts(user.id).catch(error => {
-        logger.error("Error fetching liked posts:", error);
-        return [];
-      }),
-      isFollowing(user.id).catch(error => {
-        logger.error("Error checking follow status:", error);
-        return false;
-      })
-    ]);
-
-    logger.info("Successfully loaded profile data");
-
-    return (
-      <div className="container mx-auto px-4 py-8">
-        <Suspense fallback={<LoadingSpinner />}>
-          <ProfilePageClient
-            user={user}
-            posts={posts}
-            likedPosts={likedPosts}
-            isFollowing={isCurrentUserFollowing}
-          />
-        </Suspense>
-      </div>
-    );
-  } catch (error) {
-    logger.error("Error in ProfilePageServer:", error);
-    throw error; // Let Next.js error boundary handle it
+export default async function ProfilePage({ params }: { params: { username: string }; }) {
+  const session = await auth();
+  if (!session?.user) {
+    redirect("/auth/signin");
   }
+
+  const user = await getProfile(params.username);
+  if (!user) {
+    redirect("/404");
+  }
+
+  const [posts, likedPosts, isUserFollowing] = await Promise.all([
+    getUserPosts(user.id),
+    getUserLikedPosts(user.id),
+    isFollowing(session.user.id, user.id)
+  ]);
+
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <ProfilePageClient
+        user={user}
+        posts={posts}
+        likedPosts={likedPosts}
+        isFollowing={isUserFollowing}
+        isCurrentUser={session.user.id === user.id}
+      />
+    </Suspense>
+  );
 }

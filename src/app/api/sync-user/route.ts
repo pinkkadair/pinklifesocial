@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getServerSession } from 'next-auth';
+import { auth } from "@/lib/auth";
 import { prisma } from '@/lib/prisma';
 import { usernameSchema } from '@/lib/validations/user';
 
@@ -19,7 +19,7 @@ function generateValidUsername(email: string): string {
 
 export async function POST() {
   try {
-    const session = await getServerSession();
+    const session = await auth();
     if (!session?.user?.email) {
       return NextResponse.json(
         { error: 'Unauthorized' },

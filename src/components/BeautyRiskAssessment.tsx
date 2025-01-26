@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, Dispatch, SetStateAction } from "react";
+import React, { useState, useCallback, useEffect, useMemo, Dispatch, SetStateAction } from 'react';
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import {
@@ -38,6 +38,16 @@ import { RiskFactorType, RiskSeverity } from "@prisma/client";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { calculateBeautyRiskAssessment, UserInputs } from "@/lib/beauty-risk-calculator";
+import { Progress } from '@/components/ui/progress';
+import { CameraIcon, XIcon } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import { mlManager } from '@/lib/ml-models';
+import { logger } from '@/lib/logger';
+import { analyzeSkinFeatures } from '@/lib/skin-analysis';
+import type { NormalizedFace } from '@tensorflow-models/blazeface';
+import type { Tensor1D, Tensor2D } from '@tensorflow/tfjs';
+import { SkinAnalysis } from "@/components/SkinAnalysis";
+import { Card } from "@/components/ui/card";
 
 const skinTypes = [
   { value: "Oily", label: "Oily" },
@@ -84,423 +94,219 @@ const treatments = [
 ] as const;
 
 const formSchema = z.object({
-  age: z.number().min(18, "Must be at least 18 years old").max(120, "Please enter a valid age"),
-  gender: z.enum(["Female", "Male", "Non-binary", "Other"]),
-  skinType: z.enum(["Oily", "Dry", "Combination", "Sensitive", "Normal"]),
-  melanation: z.enum(["None", "Light", "Medium", "Dark", "Very Dark", "Mixed"]),
-  concerns: z.array(z.string()).min(1, "Please select at least one skin concern"),
-  underlyingConditions: z.array(z.string()),
-  allergies: z.array(z.string()),
-  medications: z.array(z.string()),
-  smoking: z.boolean(),
-  sunExposure: z.enum(["minimal", "moderate", "heavy"]),
-  waterIntake: z.enum(["<1L", "1-2L", ">2L"]),
-  treatmentsWanted: z.array(z.string()),
-  pregnancyOrBreastfeeding: z.boolean(),
+  age: z.number().min(18).max(100),
+  gender: z.enum(['male', 'female', 'other']),
+  skinType: z.enum(['oily', 'dry', 'combination', 'normal', 'sensitive']),
+  melanation: z.enum(['light', 'medium', 'dark']),
+  concerns: z.array(z.string()),
+  products: z.array(z.string()),
+  environment: z.array(z.string()),
+  lifestyle: z.array(z.string())
 });
 
 type FormData = z.infer<typeof formSchema>;
 
-interface BeautyRiskAssessmentProps {
+export interface BeautyRiskAssessmentProps {
   open: boolean;
-  onClose: Dispatch<SetStateAction<boolean>>;
+  onClose: (updated: boolean) => void;
   onComplete: () => void;
+  onStartAnalysis: () => void;
+  onAnalysisComplete: (result: Array<{
+    type: RiskFactorType;
+    severity: RiskSeverity;
+    description: string;
+    recommendation?: string;
+  }>) => void;
+  onAnalysisEnd: () => void;
 }
 
-function BeautyRiskAssessment({ open, onClose, onComplete }: BeautyRiskAssessmentProps) {
-  const router = useRouter();
-  const { data: session } = useSession();
-  const [isSubmitting, setIsSubmitting] = useState(false);
+// Dynamically import components
+const WebcamCapture = dynamic(() => import('./WebcamCapture'), {
+  ssr: false,
+  loading: () => <div>Loading camera...</div>
+});
 
-  const form = useForm<FormData>({
-    resolver: zodResolver(formSchema),
-    defaultValues: {
-      age: 25,
-      gender: "Female",
-      skinType: "Normal",
-      melanation: "Light",
-      concerns: [],
-      underlyingConditions: [],
-      allergies: [],
-      medications: [],
-      smoking: false,
-      sunExposure: "minimal",
-      waterIntake: "1-2L",
-      treatmentsWanted: [],
-      pregnancyOrBreastfeeding: false,
+const MetricsDisplay = dynamic(() => import('./skin-analysis/MetricsDisplay'), {
+  ssr: true
+});
+
+const ErrorDisplay = dynamic(() => import('./skin-analysis/ErrorDisplay'), {
+  ssr: true
+});
+
+// Memoized types and interfaces
+export interface SkinMetric {
+  name: string;
+  value: number;
+  description: string;
+}
+
+interface SkinAnalysisProps {
+  onAnalysisComplete: (metrics: SkinMetric[]) => void;
+  onStartAnalysis: () => void;
+  onAnalysisEnd: () => void;
+}
+
+// Memoized utility functions
+const createMetric = (name: string, value: number, description: string): SkinMetric => ({
+  name,
+  value,
+  description
+});
+
+// Update the Face type to match NormalizedFace
+interface Face {
+  keypoints: Array<{ x: number; y: number }>;
+  box: {
+    xMin: number;
+    yMin: number;
+    xMax: number;
+    yMax: number;
+  };
+}
+
+// Convert NormalizedFace to Face
+const normalizedFaceToFace = (face: NormalizedFace): Face => {
+  if (!face.topLeft || !face.bottomRight || !face.landmarks) {
+    throw new Error('Invalid face detection result');
+  }
+
+  const [topLeft, bottomRight] = [face.topLeft, face.bottomRight].map(point => {
+    if (!Array.isArray(point) || point.length < 2) {
+      throw new Error('Invalid point data');
     }
+    return {
+      x: point[0] as number,
+      y: point[1] as number
+    };
   });
 
-  const onSubmit = async (data: FormData) => {
-    if (!session?.user?.subscriptionTier || session.user.subscriptionTier === "FREE") {
-      toast.error("Beauty risk assessment requires Pink U or VIP subscription");
-      return;
-    }
+  const landmarks = Array.isArray(face.landmarks) 
+    ? face.landmarks 
+    : (face.landmarks as Tensor2D).arraySync() as number[][];
 
-    try {
-      setIsSubmitting(true);
-      
-      // Calculate beauty risk assessment
-      const assessment = calculateBeautyRiskAssessment(data as UserInputs);
-
-      // Save to database
-      const response = await fetch("/api/beauty-risk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          factors: assessment.factors,
-          riskScore: assessment.riskScore,
-          socialMediaText: assessment.socialMediaText,
-        })
-      });
-
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.error || "Failed to save assessment");
-      }
-
-      toast.success("Beauty risk assessment saved successfully");
-      onClose(false);
-      onComplete();
-    } catch (error) {
-      console.error("Error saving assessment:", error);
-      toast.error(error instanceof Error ? error.message : "Failed to save assessment");
-    } finally {
-      setIsSubmitting(false);
+  return {
+    keypoints: landmarks.map(point => ({
+      x: Array.isArray(point) ? point[0] : (point as Tensor1D).arraySync()[0],
+      y: Array.isArray(point) ? point[1] : (point as Tensor1D).arraySync()[1]
+    })),
+    box: {
+      xMin: topLeft.x,
+      yMin: topLeft.y,
+      xMax: bottomRight.x,
+      yMax: bottomRight.y
     }
   };
+};
+
+// Update the form field styles for better focus states
+const formFieldStyles = {
+  input: "focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-primary transition-all duration-300",
+  select: "focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-primary transition-all duration-300",
+  checkbox: "focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-primary data-[state=checked]:animate-in data-[state=unchecked]:animate-out transition-all duration-300",
+  radio: "focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-primary data-[state=checked]:animate-in data-[state=unchecked]:animate-out transition-all duration-300",
+};
+
+export function BeautyRiskAssessment({
+  open,
+  onClose,
+  onComplete,
+  onStartAnalysis,
+  onAnalysisComplete,
+  onAnalysisEnd
+}: BeautyRiskAssessmentProps) {
+  const router = useRouter();
+  const { data: session } = useSession();
+  const [step, setStep] = useState(1);
+  const [captures, setCaptures] = useState<string[]>([]);
+  const [formData, setFormData] = useState<Partial<FormData>>({
+    age: undefined,
+    gender: undefined,
+    skinType: undefined,
+    melanation: undefined,
+    concerns: [],
+    products: [],
+    environment: [],
+    lifestyle: []
+  });
+
+  useEffect(() => {
+    if (!open) {
+      setStep(1);
+      setCaptures([]);
+      setFormData({
+        age: undefined,
+        gender: undefined,
+        skinType: undefined,
+        melanation: undefined,
+        concerns: [],
+        products: [],
+        environment: [],
+        lifestyle: []
+      });
+    }
+  }, [open]);
+
+  const handleSkinAnalysisComplete = useCallback((result: {
+    type: RiskFactorType;
+    severity: RiskSeverity;
+    description: string;
+    recommendation?: string;
+  }) => {
+    onAnalysisComplete([result]);
+    setStep(step + 1);
+  }, [onAnalysisComplete, step]);
+
+  const handleCapturesChange = useCallback((newCaptures: string[]) => {
+    setCaptures(newCaptures);
+  }, []);
+
+  const handleError = useCallback((error: string) => {
+    logger.error('Beauty risk assessment error:', error);
+    onClose(false);
+  }, [onClose]);
+
+  const handleClose = useCallback(() => {
+    onClose(false);
+  }, [onClose]);
 
   return (
-    <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Beauty Risk Assessment</DialogTitle>
-          <DialogDescription>
-            Complete this comprehensive assessment to get personalized beauty recommendations and risk analysis
-          </DialogDescription>
-        </DialogHeader>
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="max-w-4xl">
+        <div className="space-y-4">
+          <Progress value={(step / 3) * 100} className="w-full" />
+          
+          {step === 1 && (
+            <Card className="p-4">
+              <SkinAnalysis
+                onCapturesChange={handleCapturesChange}
+                onAnalysisComplete={handleSkinAnalysisComplete}
+                onError={handleError}
+                onStartAnalysis={onStartAnalysis}
+                onAnalysisEnd={onAnalysisEnd}
+                captures={captures}
+                isLoading={false}
+                onStartCamera={() => {}}
+              />
+            </Card>
+          )}
 
-        {!session?.user?.subscriptionTier || session.user.subscriptionTier === "FREE" ? (
-          <div className="text-center py-6">
-            <p className="text-muted-foreground mb-4">
-              Beauty risk assessment is available for Pink U and VIP members only.
-            </p>
-            <MembershipDialog 
-              currentTier={session?.user?.subscriptionTier || "FREE"}
-              onClose={() => {}}
-            >
-              <Button variant="default" className="w-full">
-                Upgrade for Advanced Analysis
-              </Button>
-            </MembershipDialog>
-          </div>
-        ) : (
-          <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <FormField
-                  control={form.control}
-                  name="age"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Age</FormLabel>
-                      <FormControl>
-                        <Input type="number" {...field} onChange={e => field.onChange(parseInt(e.target.value))} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+          {step === 2 && (
+            <Card className="p-4">
+              <h3 className="text-lg font-semibold mb-4">Additional Information</h3>
+              {/* Form fields for age, gender, skin type, etc. */}
+              <Button onClick={() => setStep(3)}>Next</Button>
+            </Card>
+          )}
 
-                <FormField
-                  control={form.control}
-                  name="gender"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Gender</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select gender" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          <SelectItem value="Female">Female</SelectItem>
-                          <SelectItem value="Male">Male</SelectItem>
-                          <SelectItem value="Non-binary">Non-binary</SelectItem>
-                          <SelectItem value="Other">Other</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="skinType"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Skin Type</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select skin type" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {skinTypes.map(type => (
-                            <SelectItem key={type.value} value={type.value}>
-                              {type.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="melanation"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Skin Tone</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select skin tone" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {melanationTypes.map(type => (
-                            <SelectItem key={type.value} value={type.value}>
-                              {type.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="concerns"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Skin Concerns</FormLabel>
-                      <div className="space-y-2">
-                        {skinConcerns.map(concern => (
-                          <div key={concern.value} className="flex items-center space-x-2">
-                            <Checkbox
-                              checked={field.value.includes(concern.value)}
-                              onCheckedChange={(checked) => {
-                                const newValue = checked
-                                  ? [...field.value, concern.value]
-                                  : field.value.filter(v => v !== concern.value);
-                                field.onChange(newValue);
-                              }}
-                            />
-                            <label className="text-sm">{concern.label}</label>
-                          </div>
-                        ))}
-                      </div>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="treatmentsWanted"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Desired Treatments</FormLabel>
-                      <div className="space-y-2">
-                        {treatments.map(treatment => (
-                          <div key={treatment.value} className="flex items-center space-x-2">
-                            <Checkbox
-                              checked={field.value.includes(treatment.value)}
-                              onCheckedChange={(checked) => {
-                                const newValue = checked
-                                  ? [...field.value, treatment.value]
-                                  : field.value.filter(v => v !== treatment.value);
-                                field.onChange(newValue);
-                              }}
-                            />
-                            <label className="text-sm">{treatment.label}</label>
-                          </div>
-                        ))}
-                      </div>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="sunExposure"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Sun Exposure</FormLabel>
-                      <RadioGroup
-                        onValueChange={field.onChange}
-                        defaultValue={field.value}
-                        className="flex flex-col space-y-1"
-                      >
-                        <FormControl>
-                          <div className="flex items-center space-x-2">
-                            <RadioGroupItem value="minimal" id="minimal" />
-                            <label htmlFor="minimal">Minimal</label>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <RadioGroupItem value="moderate" id="moderate" />
-                            <label htmlFor="moderate">Moderate</label>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <RadioGroupItem value="heavy" id="heavy" />
-                            <label htmlFor="heavy">Heavy</label>
-                          </div>
-                        </FormControl>
-                      </RadioGroup>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="waterIntake"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Daily Water Intake</FormLabel>
-                      <RadioGroup
-                        onValueChange={field.onChange}
-                        defaultValue={field.value}
-                        className="flex flex-col space-y-1"
-                      >
-                        <FormControl>
-                          <div className="flex items-center space-x-2">
-                            <RadioGroupItem value="<1L" id="low" />
-                            <label htmlFor="low">Less than 1L</label>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <RadioGroupItem value="1-2L" id="medium" />
-                            <label htmlFor="medium">1-2L</label>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <RadioGroupItem value=">2L" id="high" />
-                            <label htmlFor="high">More than 2L</label>
-                          </div>
-                        </FormControl>
-                      </RadioGroup>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <div className="space-y-4">
-                  <FormField
-                    control={form.control}
-                    name="smoking"
-                    render={({ field }) => (
-                      <FormItem className="flex items-center space-x-2">
-                        <FormControl>
-                          <Checkbox
-                            checked={field.value}
-                            onCheckedChange={field.onChange}
-                          />
-                        </FormControl>
-                        <FormLabel className="!mt-0">Current Smoker</FormLabel>
-                      </FormItem>
-                    )}
-                  />
-
-                  <FormField
-                    control={form.control}
-                    name="pregnancyOrBreastfeeding"
-                    render={({ field }) => (
-                      <FormItem className="flex items-center space-x-2">
-                        <FormControl>
-                          <Checkbox
-                            checked={field.value}
-                            onCheckedChange={field.onChange}
-                          />
-                        </FormControl>
-                        <FormLabel className="!mt-0">Pregnant or Breastfeeding</FormLabel>
-                      </FormItem>
-                    )}
-                  />
-                </div>
-              </div>
-
-              <div className="space-y-4">
-                <FormField
-                  control={form.control}
-                  name="underlyingConditions"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Medical Conditions (if any)</FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder="e.g. diabetes, immune disorders (comma separated)"
-                          value={field.value.join(", ")}
-                          onChange={(e) => field.onChange(e.target.value.split(",").map(s => s.trim()).filter(Boolean))}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="allergies"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Known Allergies (if any)</FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder="e.g. latex, hydroquinone (comma separated)"
-                          value={field.value.join(", ")}
-                          onChange={(e) => field.onChange(e.target.value.split(",").map(s => s.trim()).filter(Boolean))}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="medications"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Current Medications (if any)</FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder="e.g. isotretinoin (comma separated)"
-                          value={field.value.join(", ")}
-                          onChange={(e) => field.onChange(e.target.value.split(",").map(s => s.trim()).filter(Boolean))}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-
-              <DialogFooter>
-                <Button type="submit" disabled={isSubmitting}>
-                  {isSubmitting ? "Saving..." : "Save Assessment"}
-                </Button>
-              </DialogFooter>
-            </form>
-          </Form>
-        )}
+          {step === 3 && (
+            <Card className="p-4">
+              <h3 className="text-lg font-semibold mb-4">Review & Submit</h3>
+              {/* Display summary of collected data */}
+              <Button onClick={onComplete}>Complete Assessment</Button>
+            </Card>
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   );

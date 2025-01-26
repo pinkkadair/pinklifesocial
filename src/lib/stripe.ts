@@ -10,8 +10,8 @@ if (!stripeSecretKey) {
 // Initialize Stripe only on the server side
 let stripe: Stripe | null = null;
 if (typeof window === 'undefined' && stripeSecretKey) {
-  stripe = new Stripe(stripeSecretKey, {
-    apiVersion: '2024-12-18.acacia',
+  stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
+    apiVersion: '2023-10-16',
     typescript: true,
   });
 }

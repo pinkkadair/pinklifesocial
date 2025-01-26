@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createUploadthing, type FileRouter } from "uploadthing/next";
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { auth } from "@/lib/auth";
+// Removed authOptions import - using auth() directly;
 import { prisma } from '@/lib/prisma';
 import { logger } from '@/lib/logger';
 import { createRouteHandler } from "uploadthing/next";
@@ -13,7 +13,7 @@ const uploadRouter = {
     video: { maxFileSize: '512MB', maxFileCount: 1 }
   })
     .middleware(async ({ req }) => {
-      const session = await getServerSession(authOptions);
+      const session = await auth();
       if (!session?.user?.email) {
         throw new Error('Unauthorized');
       }

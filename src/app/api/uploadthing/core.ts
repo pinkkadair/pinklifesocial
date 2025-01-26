@@ -1,13 +1,13 @@
 import { createUploadthing, type FileRouter } from "uploadthing/next";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { auth } from "@/lib/auth";
+// Removed authOptions import - using auth() directly;
 import { prisma } from "@/lib/prisma";
 import { logger } from "@/lib/logger";
 
 const f = createUploadthing();
 
 const handleAuth = async () => {
-  const session = await getServerSession(authOptions);
+  const session = await auth();
   if (!session?.user?.email) {
     throw new Error("Unauthorized");
   }

@@ -1,6 +1,6 @@
 import { Metadata } from 'next';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { auth } from "@/lib/auth";
+// Removed authOptions import - using auth() directly;
 import { prisma } from '@/lib/prisma';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -22,7 +22,7 @@ export const metadata: Metadata = {
 };
 
 export default async function WorkshopsPage() {
-  const session = await getServerSession(authOptions);
+  const session = await auth();
   const user = session?.user?.email ? await prisma.user.findUnique({
     where: { email: session.user.email },
     select: { id: true, subscriptionTier: true },

@@ -1,12 +1,12 @@
 "use server";
 
 import { prisma } from "@/lib/prisma";
-import { getServerSession } from "next-auth";
+import { auth } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 
 export async function syncUser() {
   try {
-    const session = await getServerSession();
+    const session = await auth();
     if (!session?.user?.email) {
       console.log("No session found in syncUser");
       return null;
@@ -45,7 +45,7 @@ export async function syncUser() {
 
 export async function getDbUserId() {
   try {
-    const session = await getServerSession();
+    const session = await auth();
     if (!session?.user?.email) {
       console.log("No session found in getDbUserId");
       return null;
@@ -75,7 +75,7 @@ export async function getDbUserId() {
 
 export async function getRandomUsers() {
   try {
-    const session = await getServerSession();
+    const session = await auth();
     if (!session?.user?.email) {
       console.log("No session found in getRandomUsers");
       return [];
@@ -150,7 +150,7 @@ export async function getRandomUsers() {
 
 export async function toggleFollow(targetUserId: string) {
   try {
-    const session = await getServerSession();
+    const session = await auth();
     if (!session?.user?.email) {
       console.log("No session found in toggleFollow");
       throw new Error("Unauthorized");
@@ -220,7 +220,7 @@ export async function toggleFollow(targetUserId: string) {
 
 export async function updateSubscriptionTier(tier: 'PINKU' | 'VIP') {
   try {
-    const session = await getServerSession();
+    const session = await auth();
     if (!session?.user?.email) {
       console.log("No session found in updateSubscriptionTier");
       return { success: false, error: "Unauthorized" };

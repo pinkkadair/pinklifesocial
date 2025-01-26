@@ -1,6 +1,6 @@
 import { Metadata } from "next";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { auth } from "@/lib/auth";
+// Removed authOptions import - using auth() directly;
 import { SUBSCRIPTION_PLANS } from "@/lib/stripe";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 };
 
 export default async function MembershipPage() {
-  const session = await getServerSession(authOptions);
+  const session = await auth();
   if (!session?.user) {
     redirect("/sign-in");
   }

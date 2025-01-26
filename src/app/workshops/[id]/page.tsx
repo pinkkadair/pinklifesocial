@@ -1,7 +1,7 @@
 import { Metadata } from 'next';
 import { notFound } from 'next/navigation';
-import { getServerSession } from 'next-auth';
-import { authOptions } from '@/lib/auth';
+import { auth } from "@/lib/auth";
+// Removed authOptions import - using auth() directly;
 import { prisma } from '@/lib/prisma';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
@@ -37,7 +37,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 }
 
 export default async function WorkshopPage({ params }: Props) {
-  const session = await getServerSession(authOptions);
+  const session = await auth();
   const user = session?.user?.email ? await prisma.user.findUnique({
     where: { email: session.user.email },
     select: { id: true, subscriptionTier: true },

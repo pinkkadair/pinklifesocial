@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/prisma";
-import { getServerSession } from "next-auth";
-import { authOptions } from "@/lib/auth";
+import { auth } from "@/lib/auth";
+// Removed authOptions import - using auth() directly;
 import { logger } from "@/lib/logger";
 import { Prisma } from "@prisma/client";
 
@@ -35,7 +35,7 @@ export async function createWorkshop(data: {
   level: string;
 }) {
   try {
-    const session = await getServerSession(authOptions);
+    const session = await auth();
     if (!session?.user?.email) {
       throw new Error('Unauthorized');
     }
@@ -124,7 +124,7 @@ export async function getUpcomingWorkshops(limit = 10) {
 
 export async function joinWorkshop(workshopId: string) {
   try {
-    const session = await getServerSession(authOptions);
+    const session = await auth();
     if (!session?.user?.email) {
       throw new Error('Unauthorized');
     }
@@ -204,7 +204,7 @@ export async function joinWorkshop(workshopId: string) {
 
 export async function leaveWorkshop(workshopId: string) {
   try {
-    const session = await getServerSession(authOptions);
+    const session = await auth();
     if (!session?.user?.email) {
       throw new Error('Unauthorized');
     }
@@ -272,7 +272,7 @@ export async function leaveWorkshop(workshopId: string) {
 
 export async function updateWorkshopStatus(workshopId: string, status: 'SCHEDULED' | 'CANCELLED' | 'COMPLETED') {
   try {
-    const session = await getServerSession(authOptions);
+    const session = await auth();
     if (!session?.user?.email) {
       throw new Error('Unauthorized');
     }
@@ -332,7 +332,7 @@ export async function updateWorkshopStatus(workshopId: string, status: 'SCHEDULE
 
 export async function getUserWorkshops() {
   try {
-    const session = await getServerSession(authOptions);
+    const session = await auth();
     if (!session?.user?.email) {
       throw new Error('Unauthorized');
     }

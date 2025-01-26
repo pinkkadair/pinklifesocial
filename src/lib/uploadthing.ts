@@ -3,28 +3,46 @@
 import { createUploadthing, type FileRouter } from "uploadthing/next";
 import { generateReactHelpers } from "@uploadthing/react";
 import { UploadButton } from "@uploadthing/react";
-import { getServerSession } from "next-auth";
-import { authOptions } from "./auth";
-import { validateFileUpload } from "./security";
+import { auth } from "@/lib/auth";
 import { logger } from "./logger";
-import { ApiError } from "./api-middleware";
+import { prisma } from "./prisma";
+import { ApiError } from "./api-error";
+import { scanBuffer } from "./virus-scan";
 
 const f = createUploadthing();
 
-interface User {
-  id: string;
-  subscriptionTier: 'FREE' | 'PINKU' | 'VIP';
-}
-
-const auth = async (): Promise<User> => {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) throw new Error("Unauthorized");
-  return session.user as User;
+// Helper function to convert ArrayBuffer to Buffer
+const arrayBufferToBuffer = (arrayBuffer: ArrayBuffer): Buffer => {
+  return Buffer.from(new Uint8Array(arrayBuffer));
 };
 
-const handleAuth = async () => {
-  const user = await auth();
-  return { userId: user.id, subscriptionTier: user.subscriptionTier };
+// Validate file upload
+const validateFileUpload = async (file: { name: string; size: number; buffer: ArrayBuffer }) => {
+  // Check file extension
+  const allowedExtensions = ['.jpg', '.jpeg', '.png', '.webp', '.gif', '.mp4', '.webm'];
+  const ext = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
+  if (!allowedExtensions.includes(ext)) {
+    throw new ApiError("Invalid file type", 400);
+  }
+
+  // Convert ArrayBuffer to Buffer for virus scanning
+  const buffer = arrayBufferToBuffer(file.buffer);
+
+  // Scan for viruses
+  const scanResult = await scanBuffer(buffer);
+  if (!scanResult.isClean) {
+    throw new ApiError(`Malware detected: ${scanResult.threat}`, 400);
+  }
+
+  // Log file upload attempt
+  logger.info({
+    event: "file_upload_attempt",
+    fileName: file.name,
+    fileSize: file.size,
+    fileType: ext,
+  });
+
+  return true;
 };
 
 // Allowed file types
@@ -35,53 +53,64 @@ const ALLOWED_VIDEO_TYPES = ["video/mp4", "video/webm"];
 const MAX_IMAGE_SIZE = 8 * 1024 * 1024; // 8MB
 const MAX_VIDEO_SIZE = 512 * 1024 * 1024; // 512MB
 
-const validateFile = (file: { name: string; size: number; type: string }) => {
-  // Validate file name
-  if (!validateFileUpload(file.name)) {
-    throw new ApiError("Invalid file type", 400);
+// Get authenticated user with subscription check
+const getAuthenticatedUser = async () => {
+  const session = await auth();
+  if (!session?.user) {
+    throw new ApiError("Unauthorized", 401);
   }
-
-  // Log file upload attempt
-  logger.info({
-    event: "file_upload_attempt",
-    fileName: file.name,
-    fileSize: file.size,
-    fileType: file.type,
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: {
+      id: true,
+      subscriptionTier: true,
+    }
   });
-
-  return true;
+  if (!user) {
+    throw new ApiError("User not found", 404);
+  }
+  return user;
 };
 
-export const ourFileRouter = {
+export const uploadRouter = {
+  // Profile image upload - available to all users
   profileImage: f({ image: { maxFileSize: "4MB", maxFileCount: 1 } })
     .middleware(async () => {
-      const user = await handleAuth();
-      return { userId: user.userId };
+      const user = await getAuthenticatedUser();
+      return { userId: user.id };
     })
     .onUploadComplete(async ({ metadata, file }) => {
-      validateFile(file);
+      await validateFileUpload({ 
+        name: file.name, 
+        size: file.size, 
+        buffer: await (await fetch(file.url)).arrayBuffer() as ArrayBuffer 
+      });
+
       logger.info({
         event: "profile_image_uploaded",
         userId: metadata.userId,
         fileUrl: file.url,
       });
+
+      await prisma.user.update({
+        where: { id: metadata.userId },
+        data: { image: file.url }
+      });
     }),
 
-  postImage: f({ 
-    image: { 
-      maxFileSize: "8MB",
-      maxFileCount: 1,
-    }
-  })
+  // Post image upload - available to all users
+  postImage: f({ image: { maxFileSize: "4MB", maxFileCount: 1 } })
     .middleware(async () => {
-      const user = await handleAuth();
-      return { userId: user.userId };
+      const user = await getAuthenticatedUser();
+      return { userId: user.id };
     })
     .onUploadComplete(async ({ metadata, file }) => {
-      if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
-        throw new ApiError("Invalid image type", 400);
-      }
-      validateFile(file);
+      await validateFileUpload({ 
+        name: file.name, 
+        size: file.size, 
+        buffer: await (await fetch(file.url)).arrayBuffer() as ArrayBuffer 
+      });
+
       logger.info({
         event: "post_image_uploaded",
         userId: metadata.userId,
@@ -89,6 +118,7 @@ export const ourFileRouter = {
       });
     }),
 
+  // Workshop recording upload - only for PINKU and VIP users
   workshopRecording: f({ 
     video: { 
       maxFileSize: "512MB",
@@ -96,26 +126,36 @@ export const ourFileRouter = {
     }
   })
     .middleware(async () => {
-      const user = await handleAuth();
+      const user = await getAuthenticatedUser();
+      
+      // Tree-shake workshop recording for non-premium users
       if (user.subscriptionTier !== 'PINKU' && user.subscriptionTier !== 'VIP') {
         throw new ApiError("Only instructors can upload workshop recordings", 403);
       }
-      return { userId: user.userId, subscriptionTier: user.subscriptionTier };
+      
+      return { userId: user.id, subscriptionTier: user.subscriptionTier };
     })
     .onUploadComplete(async ({ metadata, file }) => {
       if (!ALLOWED_VIDEO_TYPES.includes(file.type)) {
         throw new ApiError("Invalid video type", 400);
       }
-      validateFile(file);
+
+      await validateFileUpload({ 
+        name: file.name, 
+        size: file.size, 
+        buffer: await (await fetch(file.url)).arrayBuffer() as ArrayBuffer 
+      });
+
       logger.info({
         event: "workshop_video_uploaded",
         userId: metadata.userId,
+        subscriptionTier: metadata.subscriptionTier,
         fileUrl: file.url,
       });
     }),
 } satisfies FileRouter;
 
-export type OurFileRouter = typeof ourFileRouter;
+export type OurFileRouter = typeof uploadRouter;
 
 export { UploadButton };
 export const { useUploadThing, uploadFiles } = generateReactHelpers<OurFileRouter>();

@@ -1,82 +1,137 @@
 "use server";
 
-import { getServerSession } from "next-auth";
+import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { revalidatePath } from "next/cache";
 import { getDbUserId } from "./user.action";
+import { logger } from "@/lib/logger";
+import { RiskFactorType, RiskSeverity, User as PrismaUser } from "@prisma/client";
 
-export async function getProfileByUsername(username: string) {
-  console.log("getProfileByUsername called with:", username);
-  
-  if (!username) {
-    console.log("Username is empty");
-    throw new Error("Username is required");
-  }
+export interface BeautyRiskAssessment {
+  id: string;
+  riskScore: number;
+  lastUpdated: Date;
+  factors: {
+    id: string;
+    type: RiskFactorType;
+    severity: RiskSeverity;
+    description: string;
+    recommendation?: string;
+  }[];
+}
 
+export interface User {
+  id: string;
+  name: string | null;
+  email: string | null;
+  image: string | null;
+  username: string;
+  bio: string | null;
+  location: string | null;
+  website: string | null;
+  followers: string[];
+  following: string[];
+  beautyRisk: BeautyRiskAssessment | null;
+  subscriptionTier: "FREE" | "PINKU" | "VIP";
+  subscriptionStatus: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  _count: {
+    posts: number;
+    followers: number;
+    following: number;
+  };
+}
+
+export async function getProfile(username: string): Promise<User | null> {
   try {
-    console.log("Attempting to find user in database...");
     const user = await prisma.user.findUnique({
       where: { username },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        username: true,
-        bio: true,
-        image: true,
-        location: true,
-        website: true,
-        createdAt: true,
-        subscriptionTier: true,
-        beautyRisk: {
+      include: {
+        beautyAssessments: {
           include: {
-            factors: true,
+            factors: true
           },
+          orderBy: {
+            createdAt: 'desc'
+          },
+          take: 1
+        },
+        followers: {
+          select: { followerId: true }
+        },
+        following: {
+          select: { followingId: true }
         },
         _count: {
           select: {
-            followers: true,
-            following: true,
             posts: true,
-          },
-        },
-      },
+            followers: true,
+            following: true
+          }
+        }
+      }
     });
 
-    console.log("Database query completed. User found:", !!user);
     if (!user) {
-      console.log(`No user found with username: ${username}`);
       return null;
     }
 
-    return user;
+    const latestAssessment = user.beautyAssessments[0];
+
+    return {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      image: user.image,
+      username: user.username,
+      bio: user.bio,
+      location: user.location,
+      website: user.website,
+      followers: user.followers.map(f => f.followerId),
+      following: user.following.map(f => f.followingId),
+      beautyRisk: latestAssessment ? {
+        id: latestAssessment.id,
+        riskScore: latestAssessment.riskScore,
+        lastUpdated: latestAssessment.updatedAt,
+        factors: latestAssessment.factors.map(f => ({
+          id: f.id,
+          type: f.type,
+          severity: f.severity,
+          description: f.description,
+          recommendation: undefined
+        }))
+      } : null,
+      subscriptionTier: user.subscriptionTier as "FREE" | "PINKU" | "VIP",
+      subscriptionStatus: user.subscriptionStatus,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      _count: user._count
+    };
   } catch (error) {
-    console.error("Database error in getProfileByUsername:", error);
-    throw error;
+    logger.error("Failed to get user profile:", error);
+    return null;
   }
 }
 
 export async function getUserPosts(userId: string) {
-  console.log("getUserPosts called for userId:", userId);
-  
-  if (!userId) {
-    console.log("No userId provided to getUserPosts");
-    return [];
-  }
-
   try {
-    const posts = await prisma.post.findMany({
-      where: {
-        authorId: userId,
-      },
+    const posts = await prisma.globalTeaPost.findMany({
+      where: { authorId: userId },
+      orderBy: { createdAt: "desc" },
       include: {
         author: {
           select: {
             id: true,
             name: true,
             username: true,
-            image: true,
-          },
+            image: true
+          }
+        },
+        likes: {
+          select: {
+            userId: true
+          }
         },
         comments: {
           include: {
@@ -85,36 +140,25 @@ export async function getUserPosts(userId: string) {
                 id: true,
                 name: true,
                 username: true,
-                image: true,
-              },
-            },
-          },
-          orderBy: {
-            createdAt: "desc",
-          },
+                image: true
+              }
+            }
+          }
         },
-        likes: {
-          select: {
-            userId: true,
-          },
-        },
+        tags: true,
         _count: {
           select: {
             likes: true,
-            comments: true,
-          },
-        },
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
+            comments: true
+          }
+        }
+      }
     });
 
-    console.log(`Found ${posts.length} posts for user ${userId}`);
     return posts;
   } catch (error) {
-    console.error("Error in getUserPosts:", error);
-    return [];
+    logger.error("Failed to get user posts:", error);
+    throw new Error("Failed to get posts");
   }
 }
 
@@ -184,59 +228,102 @@ export async function getUserLikedPosts(userId: string) {
   }
 }
 
-export async function updateProfile(formData: FormData) {
+export async function updateProfile(userId: string, data: {
+  name?: string;
+  bio?: string;
+  location?: string;
+  website?: string;
+}) {
   try {
-    const session = await getServerSession();
-    if (!session?.user?.email) {
-      console.log("No session found in updateProfile");
-      throw new Error("Unauthorized");
-    }
-
-    const name = formData.get("name") as string;
-    const bio = formData.get("bio") as string;
-    const location = formData.get("location") as string;
-    const website = formData.get("website") as string;
-
-    console.log("Updating profile for email:", session.user.email);
     const user = await prisma.user.update({
-      where: { email: session.user.email },
+      where: { id: userId },
       data: {
-        name: name || null,
-        bio: bio || null,
-        location: location || null,
-        website: website || null,
+        name: data.name,
+        bio: data.bio,
+        location: data.location,
+        website: data.website
       },
+      include: {
+        beautyAssessments: {
+          include: {
+            factors: true
+          },
+          orderBy: {
+            createdAt: 'desc'
+          },
+          take: 1
+        },
+        followers: {
+          select: { followerId: true }
+        },
+        following: {
+          select: { followingId: true }
+        },
+        _count: {
+          select: {
+            posts: true,
+            followers: true,
+            following: true
+          }
+        }
+      }
     });
 
-    console.log("Profile updated successfully");
-    revalidatePath("/profile");
-    return { success: true, user };
+    const latestAssessment = user.beautyAssessments[0];
+
+    return {
+      success: true,
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      image: user.image,
+      username: user.username,
+      bio: user.bio,
+      location: user.location,
+      website: user.website,
+      followers: user.followers.map(f => f.followerId),
+      following: user.following.map(f => f.followingId),
+      beautyRisk: latestAssessment ? {
+        id: latestAssessment.id,
+        riskScore: latestAssessment.riskScore,
+        lastUpdated: latestAssessment.updatedAt,
+        factors: latestAssessment.factors.map(f => ({
+          id: f.id,
+          type: f.type,
+          severity: f.severity,
+          description: f.description,
+          recommendation: undefined
+        }))
+      } : null,
+      subscriptionTier: user.subscriptionTier as "FREE" | "PINKU" | "VIP",
+      subscriptionStatus: user.subscriptionStatus,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      _count: user._count
+    };
   } catch (error) {
-    console.error("Error updating profile:", error);
-    return { success: false, error: "Failed to update profile" };
+    logger.error("Failed to update user profile:", error);
+    return {
+      success: false,
+      error: "Failed to update profile"
+    };
   }
 }
 
-export async function isFollowing(userId: string) {
+export async function isFollowing(userId: string, targetUserId: string) {
   try {
-    const currentUserId = await getDbUserId();
-    if (!currentUserId) {
-      console.log("No current user ID found in isFollowing");
-      return false;
-    }
-
     const follow = await prisma.follows.findUnique({
       where: {
         followerId_followingId: {
-          followerId: currentUserId,
-          followingId: userId,
-        },
-      },
+          followerId: userId,
+          followingId: targetUserId
+        }
+      }
     });
 
     return !!follow;
   } catch (error) {
-    console.error("Error checking follow status:", error);
+    logger.error("Failed to check follow status:", error);
     return false;
   }
 }

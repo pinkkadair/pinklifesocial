@@ -1,9 +1,9 @@
-import { getServerSession } from "next-auth";
+import { auth } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
 
 export default async function ProfilePage() {
-  const session = await getServerSession();
+  const session = await auth();
   
   if (!session?.user?.email) {
     redirect("/sign-in");

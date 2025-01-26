@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { prisma } from '@/lib/prisma';
 import bcrypt from 'bcryptjs';
-import { getServerSession } from 'next-auth';
+import { auth } from "@/lib/auth";
 
 export async function DELETE() {
   try {
@@ -69,7 +69,7 @@ export async function POST() {
 
 export async function GET() {
   try {
-    const session = await getServerSession();
+    const session = await auth();
     if (!session?.user?.email) {
       return NextResponse.json(
         { error: 'Not authenticated' },

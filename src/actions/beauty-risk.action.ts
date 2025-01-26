@@ -2,55 +2,58 @@
 
 import { prisma } from "@/lib/prisma";
 import { getDbUserId } from "./user.action";
-import { RiskFactorType, RiskSeverity } from "@prisma/client";
+import { RiskFactorType, RiskSeverity, BeautyRiskAssessment as PrismaBeautyRiskAssessment } from "@prisma/client";
+import { logger } from "@/lib/logger";
 
-export interface BeautyRiskWithSocial {
-  id: string;
-  userId: string;
-  riskScore: number;
-  lastUpdated: Date;
-  factors: {
-    id: string;
-    type: RiskFactorType;
-    severity: RiskSeverity;
-    description: string;
-    recommendation?: string | null;
-  }[];
-  lastPost?: string | null;
-  lastScore?: number | null;
+export interface BeautyRiskFactor {
+  type: RiskFactorType;
+  severity: RiskSeverity;
+  description: string;
 }
 
-export async function getBeautyRisk(userId: string) {
+export interface BeautyRiskAssessmentWithFactors extends Omit<PrismaBeautyRiskAssessment, 'factors'> {
+  factors: BeautyRiskFactor[];
+}
+
+export async function getBeautyRiskAssessment(userId: string): Promise<BeautyRiskAssessmentWithFactors | null> {
   try {
-    const beautyRisk = await prisma.beautyRisk.findUnique({
+    const assessment = await prisma.beautyRiskAssessment.findFirst({
       where: { userId },
       include: {
-        factors: {
-          orderBy: {
-            createdAt: "desc",
-          },
-        },
+        factors: true,
+      },
+      orderBy: {
+        createdAt: 'desc',
       },
     });
 
-    return beautyRisk;
+    if (!assessment) return null;
+
+    return {
+      ...assessment,
+      factors: assessment.factors.map(factor => ({
+        type: factor.type,
+        severity: factor.severity,
+        description: factor.description,
+      })),
+    };
   } catch (error) {
-    console.error("Error fetching beauty risk:", error);
-    throw new Error("Failed to fetch beauty risk");
+    logger.error('Error getting beauty risk assessment:', error);
+    return null;
   }
 }
 
-export async function calculateRiskScore(factors: { type: RiskFactorType; severity: RiskSeverity }[]) {
-  // Base score is 100
+export async function calculateBeautyRiskScore(factors: BeautyRiskFactor[]): Promise<number> {
+  // Base score starts at 100
   let score = 100;
 
   // Calculate deductions based on risk factors
   for (const factor of factors) {
     const severityDeduction = {
-      LOW: 5,
-      MEDIUM: 10,
-      HIGH: 15,
-      CRITICAL: 25,
+      [RiskSeverity.LOW]: 5,
+      [RiskSeverity.MEDIUM]: 10,
+      [RiskSeverity.HIGH]: 15,
+      [RiskSeverity.CRITICAL]: 25,
     }[factor.severity];
 
     score -= severityDeduction;
@@ -60,38 +63,32 @@ export async function calculateRiskScore(factors: { type: RiskFactorType; severi
   return Math.max(0, score);
 }
 
-export async function updateBeautyRisk(
+export async function updateBeautyRiskAssessment(
   userId: string,
-  factors: {
-    type: RiskFactorType;
-    severity: RiskSeverity;
-    description: string;
-    recommendation?: string;
-  }[]
-) {
+  factors: BeautyRiskFactor[],
+  socialMediaText?: string
+): Promise<BeautyRiskAssessmentWithFactors | null> {
   try {
-    const riskScore = await calculateRiskScore(factors);
+    const riskScore = await calculateBeautyRiskScore(factors);
 
-    // Use upsert to create or update the beauty risk
-    const beautyRisk = await prisma.beautyRisk.upsert({
-      where: { userId },
-      update: {
-        riskScore,
-        lastUpdated: new Date(),
-        factors: {
-          deleteMany: {}, // Remove old factors
-          createMany: {
-            data: factors,
-          },
-        },
+    const assessment = await prisma.beautyRiskAssessment.upsert({
+      where: {
+        id: await getLatestAssessmentId(userId),
       },
       create: {
         userId,
         riskScore,
+        socialMediaText: socialMediaText ?? null,
         factors: {
-          createMany: {
-            data: factors,
-          },
+          create: factors,
+        },
+      },
+      update: {
+        riskScore,
+        socialMediaText: socialMediaText ?? null,
+        factors: {
+          deleteMany: {},
+          create: factors,
         },
       },
       include: {
@@ -99,49 +96,65 @@ export async function updateBeautyRisk(
       },
     });
 
-    return beautyRisk;
-  } catch (error) {
-    console.error("Error updating beauty risk:", error);
-    throw new Error("Failed to update beauty risk");
-  }
-}
-
-export async function getCurrentUserBeautyRisk(): Promise<BeautyRiskWithSocial | null> {
-  try {
-    const userId = await getDbUserId();
-    if (!userId) return null;
-
-    const user = await prisma.user.findUnique({
+    // Update user's last beauty risk score
+    await prisma.user.update({
       where: { id: userId },
-      select: {
-        id: true,
-        lastBeautyRiskPost: true,
-        lastBeautyRiskScore: true,
-        beautyRisk: {
-          include: {
-            factors: {
-              select: {
-                id: true,
-                type: true,
-                severity: true,
-                description: true,
-                recommendation: true,
-              },
-            },
-          },
-        },
+      data: {
+        lastBeautyRiskScore: Math.round(riskScore),
       },
     });
 
-    if (!user || !user.beautyRisk) return null;
-
     return {
-      ...user.beautyRisk,
-      lastPost: user.lastBeautyRiskPost,
-      lastScore: user.lastBeautyRiskScore,
+      ...assessment,
+      factors: assessment.factors.map(factor => ({
+        type: factor.type,
+        severity: factor.severity,
+        description: factor.description,
+      })),
     };
   } catch (error) {
-    console.error("Error fetching current user beauty risk:", error);
-    throw new Error("Failed to fetch current user beauty risk");
+    logger.error('Error updating beauty risk assessment:', error);
+    return null;
   }
+}
+
+async function getLatestAssessmentId(userId: string): Promise<string> {
+  const assessment = await prisma.beautyRiskAssessment.findFirst({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true },
+  });
+  return assessment?.id ?? '';
+}
+
+export async function getUserWithBeautyRisk(userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: {
+      beautyAssessments: {
+        include: {
+          factors: true,
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        take: 1,
+      },
+    },
+  });
+
+  if (!user || !user.beautyAssessments[0]) return null;
+
+  const assessment = user.beautyAssessments[0];
+  return {
+    ...user,
+    beautyRisk: {
+      ...assessment,
+      factors: assessment.factors.map(factor => ({
+        type: factor.type,
+        severity: factor.severity,
+        description: factor.description,
+      })),
+    },
+  };
 } 

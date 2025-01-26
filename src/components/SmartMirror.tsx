@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import dynamic from 'next/dynamic';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Progress } from "@/components/ui/progress";
@@ -15,11 +15,9 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SkinAnalysisResult } from '@/lib/skin-analysis';
-
-// Import SkinAnalysis component with no SSR
-const SkinAnalysis = dynamic(() => import('./SkinAnalysis'), {
-  ssr: false,
-});
+import { RiskFactorType, RiskSeverity } from '@prisma/client';
+import { logger } from '@/lib/logger';
+import type { ComponentType } from 'react';
 
 interface SkinMetric {
   name: string;
@@ -33,14 +31,42 @@ interface HistoricalMetric extends SkinMetric {
 
 interface SmartMirrorProps {
   isVIP: boolean;
+  onAnalysisComplete: (result: {
+    type: RiskFactorType;
+    severity: RiskSeverity;
+    description: string;
+    recommendation?: string;
+  }) => void;
 }
 
-export default function SmartMirror({ isVIP }: SmartMirrorProps) {
+interface SkinAnalysisProps {
+  onCapturesChange: (captures: string[]) => void;
+  onAnalysisComplete: (result: {
+    type: RiskFactorType;
+    severity: RiskSeverity;
+    description: string;
+    recommendation?: string;
+  }) => void;
+  onError?: (error: string) => void;
+  onStartAnalysis: () => void;
+  onAnalysisEnd: () => void;
+  captures: string[];
+  isLoading: boolean;
+  onStartCamera: () => void;
+}
+
+const SkinAnalysis = dynamic<SkinAnalysisProps>(() => import('./SkinAnalysis').then(mod => mod.SkinAnalysis), {
+  ssr: false
+});
+
+export default function SmartMirror({ isVIP, onAnalysisComplete }: SmartMirrorProps) {
   const [metrics, setMetrics] = useState<SkinMetric[]>([]);
   const [history, setHistory] = useState<HistoricalMetric[][]>([]);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [activeTab, setActiveTab] = useState('analysis');
+  const [progress, setProgress] = useState(0);
+  const [captures, setCaptures] = useState<string[]>([]);
 
   // Load historical data
   useEffect(() => {
@@ -57,34 +83,30 @@ export default function SmartMirror({ isVIP }: SmartMirrorProps) {
     }
   }, []);
 
-  const handleAnalysisComplete = (newMetrics: SkinMetric[]) => {
-    setMetrics(newMetrics);
-    const now = new Date();
-    setLastUpdated(now);
-
-    // Save current analysis
-    localStorage.setItem('lastSkinAnalysis', JSON.stringify({
-      metrics: newMetrics,
-      date: now.toISOString(),
-    }));
-
-    // Update history
-    const historicalMetrics = newMetrics.map(metric => ({
-      ...metric,
-      date: now.toISOString(),
-    }));
-    const newHistory = [...history, historicalMetrics];
-    setHistory(newHistory);
-    localStorage.setItem('skinAnalysisHistory', JSON.stringify(newHistory));
-  };
-
-  const handleStartAnalysis = () => {
-    setIsAnalyzing(true);
-  };
-
-  const handleAnalysisEnd = () => {
+  const handleAnalysisComplete = useCallback((result: {
+    type: RiskFactorType;
+    severity: RiskSeverity;
+    description: string;
+    recommendation?: string;
+  }) => {
+    onAnalysisComplete(result);
     setIsAnalyzing(false);
-  };
+    setProgress(100);
+  }, [onAnalysisComplete]);
+
+  const handleStartAnalysis = useCallback(() => {
+    setIsAnalyzing(true);
+    setProgress(0);
+  }, []);
+
+  const handleAnalysisEnd = useCallback(() => {
+    setIsAnalyzing(false);
+  }, []);
+
+  const handleError = useCallback((error: string) => {
+    logger.error('Smart mirror error:', error);
+    setIsAnalyzing(false);
+  }, []);
 
   const getMetricTrend = (metricName: string): { trend: number; icon: JSX.Element } => {
     if (history.length < 2) return { trend: 0, icon: <TrendingUp className="w-4 h-4 text-gray-400" /> };
@@ -200,9 +222,14 @@ export default function SmartMirror({ isVIP }: SmartMirrorProps) {
           <TabsContent value="analysis" className="space-y-4">
             {!isAnalyzing && metrics.length === 0 ? (
               <SkinAnalysis
+                onCapturesChange={setCaptures}
                 onAnalysisComplete={handleAnalysisComplete}
+                onError={handleError}
                 onStartAnalysis={handleStartAnalysis}
                 onAnalysisEnd={handleAnalysisEnd}
+                captures={captures}
+                isLoading={false}
+                onStartCamera={() => {}}
               />
             ) : (
               <div className="space-y-6">

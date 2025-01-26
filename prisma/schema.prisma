@@ -34,40 +34,40 @@ model Session {
 }
 
 model User {
-  id                   String             @id @default(cuid())
-  email                String             @unique
-  username             String             @unique
+  id                   String                @id @default(cuid())
+  email                String                @unique
+  username             String                @unique
   name                 String?
   bio                  String?
   image                String?
   location             String?
   website              String?
-  createdAt            DateTime           @default(now())
-  updatedAt            DateTime           @updatedAt
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
   lastBeautyRiskPost   String?
   lastBeautyRiskScore  Int?
-  subscriptionTier     SubscriptionTier   @default(FREE)
+  subscriptionTier     SubscriptionTier      @default(FREE)
   emailVerified        DateTime?
   password             String?
-  stripeCustomerId     String?            @unique
+  stripeCustomerId     String?               @unique
   subscriptionId       String?
   subscriptionStatus   String?
   accounts             Account[]
-  beautyRisk           BeautyRisk?
+  beautyAssessments    BeautyRiskAssessment[]
   comments             Comment[]
-  following            Follows[]          @relation("follower")
-  followers            Follows[]          @relation("following")
+  following            Follows[]             @relation("follower")
+  followers            Follows[]             @relation("following")
   globalTeaComments    GlobalTeaComment[]
   globalTeaPosts       GlobalTeaPost[]
   answers              KrisAnswer[]
   questions            KrisQuestion[]
-  likes                Like[]
-  notificationsCreated Notification[]     @relation("notificationCreator")
-  notifications        Notification[]     @relation("userNotifications")
+  likes               Like[]
+  notificationsCreated Notification[]        @relation("notificationCreator")
+  notifications        Notification[]        @relation("userNotifications")
   posts                Post[]
   sessions             Session[]
-  hostedWorkshops       Workshop[]       @relation("WorkshopHost")
-  attendedWorkshops     Workshop[]       @relation("WorkshopAttendees")
+  hostedWorkshops      Workshop[]            @relation("WorkshopHost")
+  attendedWorkshops    Workshop[]            @relation("WorkshopAttendees")
 }
 
 model VerificationToken {
@@ -228,28 +228,30 @@ model GlobalTeaTag {
   posts       GlobalTeaPost[] @relation("GlobalTeaPostToTag")
 }
 
-model BeautyRisk {
-  id          String             @id @default(cuid())
-  userId      String             @unique
-  riskScore   Int
-  lastUpdated DateTime           @default(now())
-  user        User               @relation(fields: [userId], references: [id], onDelete: Cascade)
-  factors     BeautyRiskFactor[]
+model BeautyRiskAssessment {
+  id             String             @id @default(cuid())
+  userId         String
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  factors        BeautyRiskFactor[]
+  riskScore      Float
+  socialMediaText String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
 
   @@index([userId])
 }
 
 model BeautyRiskFactor {
-  id             String         @id @default(cuid())
-  beautyRiskId   String
+  id             String               @id @default(cuid())
   type           RiskFactorType
   severity       RiskSeverity
   description    String
-  recommendation String?
-  createdAt      DateTime       @default(now())
-  beautyRisk     BeautyRisk     @relation(fields: [beautyRiskId], references: [id], onDelete: Cascade)
+  assessmentId   String
+  assessment     BeautyRiskAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
 
-  @@index([beautyRiskId])
+  @@index([assessmentId])
 }
 
 enum NotificationType {
@@ -271,6 +273,7 @@ enum TeaType {
   COMMUNITY_SPOTLIGHT
   LOCAL_TEA
   SPILL
+  GENERAL
 }
 
 enum RiskFactorType {

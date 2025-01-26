@@ -1,6 +1,6 @@
 "use client";
 
-import { getProfileByUsername, getUserPosts, updateProfile } from "@/actions/profile.action";
+import { getUserPosts, updateProfile, User } from "@/actions/profile.action";
 import { toggleFollow } from "@/actions/user.action";
 import PostCard from "@/components/PostCard";
 import { Avatar, AvatarImage } from "@/components/ui/avatar";
@@ -57,36 +57,10 @@ import {
 } from "@/components/ui/accordion";
 import { ProfileImageUpload } from "@/components/ProfileImageUpload";
 import { SUBSCRIPTION_PLANS } from "@/lib/stripe";
-
-interface User {
-  id: string;
-  email: string;
-  username: string;
-  name: string | null;
-  bio: string | null;
-  image: string | null;
-  location: string | null;
-  website: string | null;
-  subscriptionTier: 'FREE' | 'PINKU' | 'VIP';
-  createdAt: Date;
-  beautyRisk: {
-    id: string;
-    riskScore: number;
-    lastUpdated: Date;
-    factors: Array<{
-      id: string;
-      type: RiskFactorType;
-      severity: RiskSeverity;
-      description: string;
-      recommendation?: string | null;
-    }>;
-  } | null;
-  _count: {
-    followers: number;
-    following: number;
-    posts: number;
-  };
-}
+import { useRouter } from "next/navigation";
+import { BeautyRiskAssessment } from "@/components/BeautyRiskAssessment";
+import { EditProfileDialog } from "@/components/EditProfileDialog";
+import { PostList } from "@/components/PostList";
 
 interface Post {
   id: string;
@@ -128,6 +102,7 @@ interface ProfilePageClientProps {
   posts: Post[];
   likedPosts: Post[];
   isFollowing: boolean;
+  isCurrentUser: boolean;
 }
 
 function ErrorFallback({ error, resetErrorBoundary }: { error: Error; resetErrorBoundary: () => void }) {
@@ -272,7 +247,7 @@ function AndiVirtualEsthetician() {
   );
 }
 
-function ProfileContent({ user, posts, likedPosts, isFollowing: initialIsFollowing }: ProfilePageClientProps) {
+function ProfileContent({ user, posts, likedPosts, isFollowing: initialIsFollowing, isCurrentUser }: ProfilePageClientProps) {
   const { data: session } = useSession();
   const [isFollowing, setIsFollowing] = useState(initialIsFollowing);
   const [isUpdatingFollow, setIsUpdatingFollow] = useState(false);
@@ -286,21 +261,34 @@ function ProfileContent({ user, posts, likedPosts, isFollowing: initialIsFollowi
   });
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false);
   const [activeTab, setActiveTab] = useState("posts");
+  const router = useRouter();
+  const [isEditProfileOpen, setIsEditProfileOpen] = useState(false);
+  const [isBeautyRiskOpen, setIsBeautyRiskOpen] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [isAssessing, setIsAssessing] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [formData, setFormData] = useState({
+    name: user.name || "",
+    bio: user.bio || "",
+    location: user.location || "",
+    website: user.website || ""
+  });
 
   const handleEditSubmit = async () => {
     if (isUpdatingProfile) return;
     try {
       setIsUpdatingProfile(true);
-      const formData = new FormData();
-      formData.append("name", editForm.name);
-      formData.append("bio", editForm.bio);
-      formData.append("location", editForm.location);
-      formData.append("website", editForm.website);
-      
-      const result = await updateProfile(formData);
+      const result = await updateProfile(user.id, {
+        name: formData.name,
+        bio: formData.bio,
+        location: formData.location,
+        website: formData.website
+      });
       if (result?.success) {
         toast.success("Profile updated successfully");
         setShowEditDialog(false);
+        router.refresh();
       } else {
         toast.error(result?.error || "Failed to update profile");
       }
@@ -353,6 +341,59 @@ function ProfileContent({ user, posts, likedPosts, isFollowing: initialIsFollowi
       return;
     }
     // Comment functionality will be handled within PostCard component
+  };
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({ ...prev, [name]: value }));
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsEditing(true);
+
+    try {
+      await updateProfile(user.id, {
+        name: formData.name,
+        bio: formData.bio,
+        location: formData.location,
+        website: formData.website
+      });
+
+      toast.success("Profile updated successfully");
+      setIsEditing(false);
+      router.refresh();
+    } catch (error) {
+      toast.error("Failed to update profile");
+    }
+  };
+
+  const handleStartAnalysis = () => {
+    setIsAnalyzing(true);
+    setProgress(0);
+    const interval = setInterval(() => {
+      setProgress(prev => {
+        if (prev >= 100) {
+          clearInterval(interval);
+          return 100;
+        }
+        return prev + 10;
+      });
+    }, 500);
+  };
+
+  const handleAnalysisComplete = (factors: {
+    type: RiskFactorType;
+    severity: RiskSeverity;
+    description: string;
+  }[]) => {
+    setIsAnalyzing(false);
+    setProgress(100);
+  };
+
+  const handleAnalysisEnd = () => {
+    setIsAnalyzing(false);
+    setProgress(0);
   };
 
   return (
@@ -572,7 +613,7 @@ function ProfileContent({ user, posts, likedPosts, isFollowing: initialIsFollowi
                 <p className="text-sm text-muted-foreground">Available to all members</p>
               </div>
             </div>
-            <BeautyRiskAdvisor beautyRisk={user.beautyRisk} />
+            <BeautyRiskAdvisor userId={user.id} />
           </div>
 
           {/* PinkU Tier Features */}
@@ -672,6 +713,25 @@ function ProfileContent({ user, posts, likedPosts, isFollowing: initialIsFollowi
           </div>
         </TabsContent>
       </Tabs>
+
+      <EditProfileDialog
+        open={isEditProfileOpen}
+        onClose={() => setIsEditProfileOpen(false)}
+        onSubmit={handleEditSubmit}
+        user={user}
+      />
+
+      <BeautyRiskAssessment
+        open={isBeautyRiskOpen}
+        onClose={() => setIsBeautyRiskOpen(false)}
+        onComplete={() => {
+          setIsBeautyRiskOpen(false);
+          router.refresh();
+        }}
+        onStartAnalysis={handleStartAnalysis}
+        onAnalysisComplete={handleAnalysisComplete}
+        onAnalysisEnd={handleAnalysisEnd}
+      />
     </div>
   );
 }

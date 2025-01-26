@@ -34,142 +34,147 @@ export interface LandmarkResult {
 
 type Point2D = [number, number];
 
-class MLModelManager {
-  private static instance: MLModelManager;
-  private models: MLModels = {};
-  private isLoading = false;
-  private loadPromise?: Promise<MLModels>;
+class MLManager {
+  private static instance: MLManager;
+  private faceDetectionModel: blazeface.BlazeFaceModel | null = null;
+  private featureExtractionModel: FaceLandmarksDetector | null = null;
+  private modelLoadingPromise: Promise<void> | null = null;
 
-  private constructor() {}
-
-  static getInstance(): MLModelManager {
-    if (!MLModelManager.instance) {
-      MLModelManager.instance = new MLModelManager();
-    }
-    return MLModelManager.instance;
+  private constructor() {
+    // Private constructor to enforce singleton
+    tf.enableProdMode(); // Enable production mode for better performance
+    tf.env().set('WEBGL_PACK', true); // Enable WebGL packing for better GPU utilization
   }
 
-  async loadModels(): Promise<MLModels> {
-    if (this.loadPromise) {
-      return this.loadPromise;
+  public static getInstance(): MLManager {
+    if (!MLManager.instance) {
+      MLManager.instance = new MLManager();
+    }
+    return MLManager.instance;
+  }
+
+  private async initializeWebGL(): Promise<void> {
+    try {
+      await tf.setBackend('webgl');
+      await tf.ready();
+      logger.info('WebGL backend initialized successfully');
+    } catch (error) {
+      logger.error('Failed to initialize WebGL backend:', error);
+      throw error;
+    }
+  }
+
+  public async loadFaceDetectionModel(): Promise<void> {
+    if (this.faceDetectionModel) return;
+
+    try {
+      this.faceDetectionModel = await blazeface.load({
+        maxFaces: 1,
+        inputWidth: 224,
+        inputHeight: 224,
+        iouThreshold: 0.3,
+        scoreThreshold: 0.75,
+      });
+      logger.info('Face detection model loaded successfully');
+    } catch (error) {
+      logger.error('Failed to load face detection model:', error);
+      throw error;
+    }
+  }
+
+  public async loadFeatureExtractionModel(): Promise<void> {
+    if (this.featureExtractionModel) return;
+
+    try {
+      this.featureExtractionModel = await createDetector(
+        SupportedModels.MediaPipeFaceMesh,
+        {
+          runtime: 'tfjs',
+          maxFaces: 1,
+          refineLandmarks: true,
+        }
+      );
+      logger.info('Feature extraction model loaded successfully');
+    } catch (error) {
+      logger.error('Failed to load feature extraction model:', error);
+      throw error;
+    }
+  }
+
+  public async loadModels(): Promise<void> {
+    if (this.modelLoadingPromise) {
+      return this.modelLoadingPromise;
     }
 
-    this.loadPromise = new Promise(async (resolve, reject) => {
-      if (this.isLoading) {
-        return;
-      }
-
+    this.modelLoadingPromise = (async () => {
       try {
-        this.isLoading = true;
-        logger.info('Loading ML models...');
-
-        await tf.ready();
-        logger.info('TensorFlow.js ready');
-
-        const [faceDetector, faceLandmarks] = await Promise.all([
-          blazeface.load().then(model => {
-            logger.info('Face detector loaded');
-            return model;
-          }),
-          createDetector(SupportedModels.MediaPipeFaceMesh, {
-            runtime: 'tfjs',
-            maxFaces: 1,
-            refineLandmarks: true,
-          }).then(model => {
-            logger.info('Face landmarks detector loaded');
-            return model;
-          })
+        await this.initializeWebGL();
+        await Promise.all([
+          this.loadFaceDetectionModel(),
+          this.loadFeatureExtractionModel()
         ]);
-
-        this.models = { faceDetector, faceLandmarks };
-        logger.info('All ML models loaded successfully');
-        resolve(this.models);
       } catch (error) {
-        logger.error('Failed to load ML models:', error as Error);
-        reject(error);
-      } finally {
-        this.isLoading = false;
+        this.modelLoadingPromise = null;
+        throw error;
       }
-    });
+    })();
 
-    return this.loadPromise;
+    return this.modelLoadingPromise;
   }
 
-  async detectFace(imageData: ImageData): Promise<Face | null> {
-    try {
-      if (!this.models.faceDetector) {
-        throw new Error('Face detector not loaded');
-      }
+  public async detectFace(imageData: ImageData): Promise<blazeface.NormalizedFace | null> {
+    if (!this.faceDetectionModel) {
+      throw new Error('Face detection model not loaded');
+    }
 
+    try {
       const tensor = tf.browser.fromPixels(imageData);
-      const predictions = await this.models.faceDetector.estimateFaces(tensor, false);
+      const predictions = await this.faceDetectionModel.estimateFaces(tensor, false);
       tensor.dispose();
 
-      if (predictions.length === 0) {
-        return null;
-      }
-
-      const prediction = predictions[0] as blazeface.NormalizedFace;
-      const landmarks = prediction.landmarks;
-      const topLeft = prediction.topLeft;
-      const bottomRight = prediction.bottomRight;
-
-      if (!landmarks || !topLeft || !bottomRight || !Array.isArray(landmarks)) {
-        throw new Error('Invalid face detection result');
-      }
-
-      // Ensure landmarks is an array of Point2D
-      const typedLandmarks = landmarks as Point2D[];
-      const typedTopLeft = topLeft as Point2D;
-      const typedBottomRight = bottomRight as Point2D;
-
-      return {
-        keypoints: typedLandmarks.map((point): FaceLandmark => ({
-          x: point[0],
-          y: point[1],
-        })),
-        box: {
-          xMin: typedTopLeft[0],
-          yMin: typedTopLeft[1],
-          xMax: typedBottomRight[0],
-          yMax: typedBottomRight[1],
-        },
-      };
+      return predictions[0] || null;
     } catch (error) {
-      logger.error('Face detection failed:', error as Error);
+      logger.error('Face detection failed:', error);
       throw error;
     }
   }
 
-  async detectLandmarks(imageData: ImageData): Promise<LandmarkResult | null> {
+  public async extractFeatures(imageData: ImageData): Promise<any[]> {
+    if (!this.featureExtractionModel) {
+      throw new Error('Feature extraction model not loaded');
+    }
+
     try {
-      if (!this.models.faceLandmarks) {
-        throw new Error('Face landmarks detector not loaded');
-      }
-
-      const tensor = tf.browser.fromPixels(imageData);
-      const predictions = await this.models.faceLandmarks.estimateFaces(tensor);
-      tensor.dispose();
-
-      if (predictions.length === 0) {
-        return null;
-      }
-
-      const landmarks = predictions[0].keypoints;
-      const boundingBox = predictions[0].box;
-
-      return {
-        positions: landmarks.map(point => [point.x, point.y, point.z || 0]),
-        box: {
-          xMin: boundingBox.xMin,
-          yMin: boundingBox.yMin,
-          xMax: boundingBox.xMax,
-          yMax: boundingBox.yMax,
-        },
-      };
+      const predictions = await this.featureExtractionModel.estimateFaces(imageData);
+      return predictions;
     } catch (error) {
-      logger.error('Landmark detection failed:', error as Error);
+      logger.error('Feature extraction failed:', error);
       throw error;
+    }
+  }
+
+  public disposeModels(): void {
+    try {
+      if (this.faceDetectionModel) {
+        // Dispose of any tensors associated with the model
+        const modelTensors = tf.memory().numTensors;
+        this.faceDetectionModel = null;
+        const afterTensors = tf.memory().numTensors;
+        logger.info(`Disposed ${modelTensors - afterTensors} tensors from face detection model`);
+      }
+      
+      if (this.featureExtractionModel) {
+        // Clean up feature extraction model
+        this.featureExtractionModel = null;
+      }
+      
+      // Force garbage collection of any remaining tensors
+      tf.disposeVariables();
+      this.modelLoadingPromise = null;
+      
+      logger.info('Models disposed successfully');
+    } catch (error) {
+      logger.error('Error disposing models:', error);
     }
   }
 
@@ -261,4 +266,4 @@ class MLModelManager {
   }
 }
 
-export const mlManager = MLModelManager.getInstance(); 
+export const mlManager = MLManager.getInstance(); 

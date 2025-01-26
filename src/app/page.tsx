@@ -3,12 +3,12 @@ import { getDbUserId } from "@/actions/user.action";
 import CreatePost from "@/components/CreatePost";
 import PostCard from "@/components/PostCard";
 import WhoToFollow from "@/components/WhoToFollow";
-import { getServerSession } from "next-auth";
+import { auth } from "@/lib/auth";
 import { Suspense } from "react";
 import { LoadingSpinner } from "@/components/LoadingSpinner";
 
 export default async function Home() {
-  const session = await getServerSession();
+  const session = await auth();
   
   try {
     const [posts, dbUserId] = await Promise.all([
